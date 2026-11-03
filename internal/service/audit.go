@@ -40,7 +40,21 @@ const (
 	ActionJobTrigger = "job.trigger"
 	ActionRunCancel  = "run.cancel"
 	ActionScriptTest = "script.test"
+
+	ActionSecretCreate = "secret.create"
+	ActionSecretUpdate = "secret.update"
+	ActionSecretDelete = "secret.delete"
+	ActionSecretRotate = "secret.rotate"
+
+	ActionChannelCreate = "channel.create"
+	ActionChannelUpdate = "channel.update"
+	ActionChannelDelete = "channel.delete"
 )
+
+// AuditSimple records a change that is not about a job.
+func (s *Service) AuditSimple(ctx context.Context, action string, detail any) {
+	s.audit(ctx, action, nil, "", detail)
+}
 
 // audit records a change in the log and the audit table. A failure to
 // record it is logged but does not undo the change.
@@ -94,8 +108,45 @@ func changes(before, after *store.Job) []string {
 	add("timeout_seconds", before.TimeoutSeconds != after.TimeoutSeconds)
 	add("retries", before.Retries != after.Retries)
 	add("retry_delay_seconds", before.RetryDelaySeconds != after.RetryDelaySeconds)
+	add("jitter_seconds", before.JitterSeconds != after.JitterSeconds)
+	add("alert_after_seconds", before.AlertAfterSeconds != after.AlertAfterSeconds)
+	add("notify", !equalStrings(before.Notify.Channels, after.Notify.Channels) || !equalStrings(before.Notify.On, after.Notify.On))
+	add("after_jobs", !equalStrings(before.AfterJobs, after.AfterJobs) || before.AfterOn != after.AfterOn)
 
 	return out
+}
+
+// Version is a job as the history keeps it: what can be changed by an
+// update, so two versions can be compared and an old one put back.
+type Version struct {
+	Name              string          `json:"name"`
+	Description       string          `json:"description"`
+	Tags              []string        `json:"tags"`
+	Schedule          string          `json:"schedule"`
+	Timezone          string          `json:"timezone"`
+	Enabled           bool            `json:"enabled"`
+	Executor          string          `json:"executor"`
+	Config            json.RawMessage `json:"config"`
+	Concurrency       string          `json:"concurrency"`
+	CatchUp           bool            `json:"catch_up"`
+	TimeoutSeconds    int             `json:"timeout_seconds"`
+	Retries           int             `json:"retries"`
+	RetryDelaySeconds int             `json:"retry_delay_seconds"`
+	JitterSeconds     int             `json:"jitter_seconds"`
+	AlertAfterSeconds int             `json:"alert_after_seconds"`
+	Notify            store.Notify    `json:"notify"`
+	AfterJobs         []string        `json:"after_jobs"`
+	AfterOn           string          `json:"after_on"`
+}
+
+// VersionOf is the version of a job to keep in the audit log.
+func VersionOf(j *store.Job) Version {
+	return Version{
+		Name: j.Name, Description: j.Description, Tags: j.Tags, Schedule: j.Schedule, Timezone: j.Timezone, Enabled: j.Enabled,
+		Executor: j.Executor, Config: j.Config, Concurrency: j.Concurrency, CatchUp: j.CatchUp, TimeoutSeconds: j.TimeoutSeconds,
+		Retries: j.Retries, RetryDelaySeconds: j.RetryDelaySeconds, JitterSeconds: j.JitterSeconds, AlertAfterSeconds: j.AlertAfterSeconds,
+		Notify: j.Notify, AfterJobs: j.AfterJobs, AfterOn: j.AfterOn,
+	}
 }
 
 func equalStrings(a, b []string) bool {

@@ -41,6 +41,8 @@ type Service struct {
 	store     *store.Store
 	executors executor.Executors
 	waker     Waker
+	// secrets returns the secrets runs get; nil is none.
+	secrets func() map[string]string
 	// tests bounds the test runs going on at once on this replica.
 	tests chan struct{}
 }
@@ -56,6 +58,17 @@ func New(st *store.Store, executors executor.Executors, waker Waker) *Service {
 var ErrBusy = errors.New("busy")
 
 func (s *Service) Store() *store.Store { return s.store }
+
+// SetSecrets makes test runs get the secrets fn returns, as scheduled runs do.
+func (s *Service) SetSecrets(fn func() map[string]string) { s.secrets = fn }
+
+func (s *Service) secretValues() map[string]string {
+	if s.secrets == nil {
+		return nil
+	}
+
+	return s.secrets()
+}
 
 func (s *Service) Executors() []string { return s.executors.Names() }
 
@@ -77,6 +90,11 @@ type JobInput struct {
 	TimeoutSeconds    int             `json:"timeout_seconds"`
 	Retries           int             `json:"retries"`
 	RetryDelaySeconds *int            `json:"retry_delay_seconds"`
+	JitterSeconds     int             `json:"jitter_seconds"`
+	AlertAfterSeconds int             `json:"alert_after_seconds"`
+	Notify            *store.Notify   `json:"notify"`
+	AfterJobs         []string        `json:"after_jobs"`
+	AfterOn           string          `json:"after_on"`
 	// UpdatedAt, on an update, is the version the change was made from. A
 	// job changed since then is not overwritten (409).
 	UpdatedAt *time.Time `json:"updated_at"`
@@ -87,6 +105,9 @@ const (
 	maxNameLength  = 200
 	maxTags        = 20
 	defaultRetryIn = 10
+	maxJitter      = 3600
+	minAlert       = 60
+	maxAfterJobs   = 20
 )
 
 func (s *Service) apply(j *store.Job, in JobInput, now time.Time, create bool) error {
@@ -184,6 +205,33 @@ func (s *Service) apply(j *store.Job, in JobInput, now time.Time, create bool) e
 		j.RetryDelaySeconds = *in.RetryDelaySeconds
 	}
 
+	if in.JitterSeconds < 0 || in.JitterSeconds > maxJitter {
+		return invalid("random delay must be between 0 and %d seconds", maxJitter)
+	}
+
+	j.JitterSeconds = in.JitterSeconds
+
+	if in.AlertAfterSeconds != 0 && in.AlertAfterSeconds < minAlert {
+		return invalid("the \"did not run\" alert needs at least %d seconds, or 0 for none", minAlert)
+	}
+
+	j.AlertAfterSeconds = in.AlertAfterSeconds
+
+	if in.Notify != nil {
+		n, err := s.checkNotify(*in.Notify)
+		if err != nil {
+			return err
+		}
+
+		j.Notify = n
+	} else if create {
+		j.Notify = store.Notify{Channels: []string{}, On: []string{}}
+	}
+
+	if err := s.checkAfter(j, in); err != nil {
+		return err
+	}
+
 	j.NextRunAt = nil
 
 	switch {
@@ -221,7 +269,8 @@ func (s *Service) CreateJob(ctx context.Context, in JobInput) (*store.Job, error
 		return nil, err
 	}
 
-	s.audit(ctx, ActionJobCreate, j, "", map[string]any{"schedule": j.Schedule, "executor": j.Executor, "enabled": j.Enabled})
+	s.audit(ctx, ActionJobCreate, j, "", map[string]any{"schedule": j.Schedule, "executor": j.Executor, "enabled": j.Enabled,
+		"after": VersionOf(j)})
 
 	return j, nil
 }
@@ -250,7 +299,7 @@ func (s *Service) UpdateJob(ctx context.Context, id string, in JobInput) (*store
 		return nil, err
 	}
 
-	s.audit(ctx, ActionJobUpdate, j, "", map[string]any{"changed": changes(&before, j)})
+	s.audit(ctx, ActionJobUpdate, j, "", map[string]any{"changed": changes(&before, j), "before": VersionOf(&before), "after": VersionOf(j)})
 
 	return j, nil
 }

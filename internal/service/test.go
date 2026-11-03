@@ -11,6 +11,13 @@ import (
 	"github.com/rakunlabs/kronik/internal/store"
 )
 
+// TestInput is a job to try, with the params of the try.
+type TestInput struct {
+	JobInput
+
+	Params map[string]string `json:"params"`
+}
+
 // TestRun is the outcome of a job tried once without saving it.
 type TestRun struct {
 	Status     string `json:"status"`
@@ -30,7 +37,11 @@ const (
 // Test runs a job's executor once on this replica, as given and without
 // saving anything: what the editor's "Test run" shows. It is bound by the
 // job's timeout, and by a minute at most.
-func (s *Service) Test(ctx context.Context, in JobInput) (*TestRun, error) {
+func (s *Service) Test(ctx context.Context, in TestInput) (*TestRun, error) {
+	if err := executor.CheckParams(in.Params); err != nil {
+		return nil, invalid("params: %v", err)
+	}
+
 	exec, err := s.executors.Get(in.Executor)
 	if err != nil {
 		return nil, invalid("%v", err)
@@ -66,7 +77,8 @@ func (s *Service) Test(ctx context.Context, in JobInput) (*TestRun, error) {
 	out := executor.NewOutput(testMaxOutput)
 	start := time.Now()
 
-	code, runErr := runSafely(ctx, exec, executor.Info{JobName: name, RunID: "test", Attempt: 1, ScheduledAt: start.UTC()}, cfg, out)
+	code, runErr := runSafely(ctx, exec, executor.Info{JobName: name, RunID: "test", Attempt: 1, ScheduledAt: start.UTC(),
+		Secrets: s.secretValues(), Params: in.Params}, cfg, out)
 
 	t := &TestRun{Status: store.StatusSucceeded, ResultCode: code, DurationMs: time.Since(start).Milliseconds(), Result: out.Result()}
 	t.Output, t.Truncated, _ = out.Snapshot()

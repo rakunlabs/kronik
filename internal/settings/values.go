@@ -47,6 +47,26 @@ type Values struct {
 
 	MCPEnabled  bool
 	MCPReadOnly bool
+
+	Paused             bool
+	MaintenanceWindows []string
+	MaintenanceZone    string
+	TagLimits          []string
+
+	NotificationRetention time.Duration
+	NotifyEnabled         bool
+	NotifyBaseURL         string
+	SMTPHost              string
+	SMTPPort              int
+	SMTPTLS               string
+	SMTPUser              string
+	SMTPPasswordSecret    string
+	SMTPFrom              string
+
+	SecretsRotate time.Duration
+
+	MetricsEnabled bool
+	MetricsPerJob  bool
 }
 
 // fields maps each key to the value it sets.
@@ -94,6 +114,26 @@ func (v *Values) fields() map[string]any {
 
 		"mcp.enabled":   &v.MCPEnabled,
 		"mcp.read_only": &v.MCPReadOnly,
+
+		"maintenance.paused":   &v.Paused,
+		"maintenance.windows":  &v.MaintenanceWindows,
+		"maintenance.timezone": &v.MaintenanceZone,
+		"limits.tags":          &v.TagLimits,
+
+		"retention.notifications":     &v.NotificationRetention,
+		"notify.enabled":              &v.NotifyEnabled,
+		"notify.base_url":             &v.NotifyBaseURL,
+		"notify.smtp_host":            &v.SMTPHost,
+		"notify.smtp_port":            &v.SMTPPort,
+		"notify.smtp_tls":             &v.SMTPTLS,
+		"notify.smtp_user":            &v.SMTPUser,
+		"notify.smtp_password_secret": &v.SMTPPasswordSecret,
+		"notify.smtp_from":            &v.SMTPFrom,
+
+		"secrets.rotate": &v.SecretsRotate,
+
+		"metrics.enabled": &v.MetricsEnabled,
+		"metrics.per_job": &v.MetricsPerJob,
 	}
 }
 
@@ -179,6 +219,8 @@ func (v Values) Clone() Values {
 	c.SwarmNetworks = append([]string(nil), v.SwarmNetworks...)
 	c.KubeAllowedNamespaces = append([]string(nil), v.KubeAllowedNamespaces...)
 	c.KubeAllowedImages = append([]string(nil), v.KubeAllowedImages...)
+	c.MaintenanceWindows = append([]string(nil), v.MaintenanceWindows...)
+	c.TagLimits = append([]string(nil), v.TagLimits...)
 
 	return c
 }

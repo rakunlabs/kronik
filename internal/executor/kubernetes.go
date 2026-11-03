@@ -222,7 +222,14 @@ func (k *Kubernetes) Run(ctx context.Context, info Info, raw json.RawMessage, ou
 		ns = k.defaultNamespace()
 	}
 
-	job := k.jobSpec(info, cfg, ns)
+	out.Redact(SecretValues(info.Secrets))
+
+	env, err := runEnv(info, cfg.Env)
+	if err != nil {
+		return nil, err
+	}
+
+	job := k.jobSpec(info, cfg, ns, env)
 
 	created, err := cli.BatchV1().Jobs(ns).Create(ctx, job, metav1.CreateOptions{})
 	if err != nil {
@@ -332,7 +339,7 @@ func (k *Kubernetes) Run(ctx context.Context, info Info, raw json.RawMessage, ou
 	}
 }
 
-func (k *Kubernetes) jobSpec(info Info, cfg *ContainerConfig, ns string) *batchv1.Job {
+func (k *Kubernetes) jobSpec(info Info, cfg *ContainerConfig, ns string, env map[string]string) *batchv1.Job {
 	zero := int32(0)
 	grace := int64(stopGrace)
 
@@ -352,8 +359,6 @@ func (k *Kubernetes) jobSpec(info Info, cfg *ContainerConfig, ns string) *batchv
 	case "missing":
 		c.ImagePullPolicy = corev1.PullIfNotPresent
 	}
-
-	env := runEnv(info, cfg.Env)
 
 	keys := make([]string, 0, len(env))
 	for k := range env {

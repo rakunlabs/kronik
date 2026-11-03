@@ -113,7 +113,11 @@ func mcpInstructions(readOnly bool, executors []string) string {
 		`secret_env {"NAME":"secret/key"}. Exit code 0 is success; the container's output is the run's output.` + "\n")
 	b.WriteString(`- js: {"script":"…","env":{}}. The script is the body of an async function: use await, console.log for output, return a JSON value as the result. ` +
 		"Globals: fetch(url, {method, headers, body, insecure, redirect, timeout}) like the browser's (body objects are sent as JSON; " +
-		"insecure: true skips the TLS check), sleep(ms), env, secrets (from the server configuration), job.\n\n")
+		"insecure: true skips the TLS check), sleep(ms), env, secrets (managed in kronik's Settings → Secrets), params, job.\n")
+	b.WriteString("In http, command and container configs, {{secret.NAME}} and {{param.NAME}} are filled in when the job runs; " +
+		"secret values are hidden in the output. Never put a secret's value in a config.\n")
+	b.WriteString("Jobs may run after other jobs (after_jobs, after_on), get a random delay (jitter_seconds), raise a \"did not run\" alert " +
+		"(alert_after_seconds) and notify channels (notify; list them with " + mcpPrefix + "list_channels).\n\n")
 	b.WriteString("Workflow: list jobs with " + mcpPrefix + "list_jobs, read one with " + mcpPrefix + "get_job, its runs with " +
 		mcpPrefix + "list_runs and a run's output with " + mcpPrefix + "get_run. Check a schedule with " + mcpPrefix + "schedule_preview.\n")
 
@@ -163,6 +167,12 @@ type mcpJob struct {
 	TimeoutSeconds    int               `json:"timeout_seconds,omitempty" jsonschema:"0 means none"`
 	Retries           int               `json:"retries,omitempty"`
 	RetryDelaySeconds *int              `json:"retry_delay_seconds,omitempty" jsonschema:"default 10"`
+	JitterSeconds     int               `json:"jitter_seconds,omitempty" jsonschema:"delay each scheduled run by a random 0..n seconds (max 3600)"`
+	AlertAfterSeconds int               `json:"alert_after_seconds,omitempty" jsonschema:"raise a did-not-run alert when no run succeeded for this long; 0 is none, else at least 60"`
+	Notify            *store.Notify     `json:"notify,omitempty" jsonschema:"notification channel ids (list_channels) and events: failure, recovery, no_run, success"`
+	AfterJobs         []string          `json:"after_jobs,omitempty" jsonschema:"ids of jobs whose runs start this one when they end"`
+	AfterOn           string            `json:"after_on,omitempty" jsonschema:"succeeded (default), failed or finished"`
+	Health            string            `json:"health,omitempty"`
 	NextRunAt         *time.Time        `json:"next_run_at,omitempty"`
 	UpdatedAt         *time.Time        `json:"updated_at,omitempty" jsonschema:"on update: the updated_at read; the update is refused if the job changed since"`
 	LastRun           *store.RunSummary `json:"last_run,omitempty"`
@@ -181,6 +191,8 @@ func toMCPJob(j *store.Job) mcpJob {
 		Enabled: &enabled, Executor: j.Executor, Config: cfg, Concurrency: j.Concurrency, CatchUp: j.CatchUp,
 		TimeoutSeconds: j.TimeoutSeconds, Retries: j.Retries, RetryDelaySeconds: &delay, NextRunAt: j.NextRunAt,
 		UpdatedAt: &updated, LastRun: j.LastRun,
+		JitterSeconds: j.JitterSeconds, AlertAfterSeconds: j.AlertAfterSeconds, Notify: &j.Notify, AfterJobs: j.AfterJobs, AfterOn: j.AfterOn,
+		Health: j.Health,
 	}
 }
 
@@ -191,7 +203,23 @@ func (j mcpJob) input() service.JobInput {
 		Name: j.Name, Description: j.Description, Tags: j.Tags, Schedule: j.Schedule, Timezone: j.Timezone, Enabled: j.Enabled,
 		Executor: j.Executor, Config: cfg, Concurrency: j.Concurrency, CatchUp: j.CatchUp, TimeoutSeconds: j.TimeoutSeconds,
 		Retries: j.Retries, RetryDelaySeconds: j.RetryDelaySeconds, UpdatedAt: j.UpdatedAt,
+		JitterSeconds: j.JitterSeconds, AlertAfterSeconds: j.AlertAfterSeconds, Notify: j.Notify, AfterJobs: j.AfterJobs, AfterOn: j.AfterOn,
 	}
+}
+
+type channelOut struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Type string `json:"type"`
+}
+
+type channelsOut struct {
+	Channels []channelOut `json:"channels"`
+}
+
+type triggerIn struct {
+	ID     string            `json:"id" jsonschema:"job id, or the job's name"`
+	Params map[string]string `json:"params,omitempty" jsonschema:"values for this run: params.NAME in scripts, {{param.NAME}} in configs, KRONIK_PARAM_NAME in commands and containers"`
 }
 
 type jobRef struct {
@@ -310,6 +338,23 @@ func (s *Server) registerMCPRead(server *mcp.Server) {
 		}
 
 		return nil, toMCPJob(j), nil
+	})
+
+	mcp.AddTool(server, &mcp.Tool{
+		Name: mcpPrefix + "list_channels", Description: "List the notification channels jobs can notify (id, name, type).",
+		Annotations: read("List notification channels"),
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, channelsOut, error) {
+		chs, err := s.svc.Store().ListChannels(ctx)
+		if err != nil {
+			return nil, channelsOut{}, toolErr(err)
+		}
+
+		out := channelsOut{Channels: []channelOut{}}
+		for _, c := range chs {
+			out.Channels = append(out.Channels, channelOut{ID: c.ID, Name: c.Name, Type: c.Type})
+		}
+
+		return nil, out, nil
 	})
 
 	mcp.AddTool(server, &mcp.Tool{
@@ -490,15 +535,15 @@ func (s *Server) registerMCPWrite(server *mcp.Server) {
 	}, setEnabled(true))
 
 	mcp.AddTool(server, &mcp.Tool{
-		Name: mcpPrefix + "trigger_job", Description: "Queue a run of a job now. Read its result later with get_run.",
+		Name: mcpPrefix + "trigger_job", Description: "Queue a run of a job now, optionally with params. Read its result later with get_run.",
 		Annotations: &mcp.ToolAnnotations{Title: "Run a job now", DestructiveHint: ptr(true)},
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, in jobRef) (*mcp.CallToolResult, triggerOut, error) {
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, in triggerIn) (*mcp.CallToolResult, triggerOut, error) {
 		ref, err := s.jobOf(ctx, in.ID)
 		if err != nil {
 			return nil, triggerOut{}, toolErr(err)
 		}
 
-		id, err := s.svc.Trigger(ctx, ref.ID)
+		id, err := s.svc.TriggerWith(ctx, ref.ID, in.Params)
 		if err != nil {
 			return nil, triggerOut{}, toolErr(err)
 		}
@@ -547,7 +592,7 @@ func (s *Server) registerMCPWrite(server *mcp.Server) {
 			"An http or command test does its real work, like a run.",
 		Annotations: &mcp.ToolAnnotations{Title: "Try a job", DestructiveHint: ptr(true)},
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in mcpJob) (*mcp.CallToolResult, *service.TestRun, error) {
-		t, err := s.svc.Test(ctx, in.input())
+		t, err := s.svc.Test(ctx, service.TestInput{JobInput: in.input()})
 		if err != nil {
 			return nil, nil, toolErr(err)
 		}

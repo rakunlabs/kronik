@@ -80,6 +80,13 @@ func (c *Command) Run(ctx context.Context, info Info, raw json.RawMessage, out *
 		return nil, err
 	}
 
+	out.Redact(SecretValues(info.Secrets))
+
+	env, err := expandMap(cfg.Env, info)
+	if err != nil {
+		return nil, fmt.Errorf("env %w", err)
+	}
+
 	cmd := exec.CommandContext(ctx, c.shell, "-c", cfg.Command)
 	cmd.Dir = cfg.Dir
 	cmd.Stdout = out
@@ -93,7 +100,11 @@ func (c *Command) Run(ctx context.Context, info Info, raw json.RawMessage, out *
 		"KRONIK_ATTEMPT="+strconv.Itoa(info.Attempt),
 		"KRONIK_SCHEDULED_AT="+info.ScheduledAt.UTC().Format(time.RFC3339),
 	)
-	for k, v := range cfg.Env {
+	for k, v := range paramEnv(info) {
+		cmd.Env = append(cmd.Env, k+"="+v)
+	}
+
+	for k, v := range env {
 		cmd.Env = append(cmd.Env, k+"="+v)
 	}
 

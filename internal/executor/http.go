@@ -99,6 +99,20 @@ func (h *HTTP) Run(ctx context.Context, info Info, raw json.RawMessage, out *Out
 		return nil, err
 	}
 
+	out.Redact(SecretValues(info.Secrets))
+
+	if cfg.URL, err = expand(cfg.URL, info); err != nil {
+		return nil, fmt.Errorf("url: %w", err)
+	}
+
+	if cfg.Body, err = expand(cfg.Body, info); err != nil {
+		return nil, fmt.Errorf("body: %w", err)
+	}
+
+	if cfg.Headers, err = expandMap(cfg.Headers, info); err != nil {
+		return nil, fmt.Errorf("header %w", err)
+	}
+
 	if _, ok := ctx.Deadline(); !ok {
 		var cancel context.CancelFunc
 

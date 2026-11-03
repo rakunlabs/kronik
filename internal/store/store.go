@@ -44,10 +44,34 @@ type Store struct {
 	db *sql.DB
 	// t holds the prefixed table names.
 	t tables
+	// bus, when set, tells replicas about changed runs and new work.
+	bus *Bus
+}
+
+// SetBus makes the store announce changed runs and queued work on bus.
+func (s *Store) SetBus(b *Bus) { s.bus = b }
+
+// announce tells the replicas the runs changed, and wakes their schedulers
+// when wake is set. It never blocks the caller for long.
+func (s *Store) announce(wake bool, runIDs ...string) {
+	if s.bus == nil {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	for _, id := range runIDs {
+		s.bus.Send(ctx, TopicRun, id)
+	}
+
+	if wake {
+		s.bus.Send(ctx, TopicWake, "")
+	}
 }
 
 type tables struct {
-	jobs, runs, nodes, audit, settings string
+	jobs, runs, nodes, audit, settings, secretKeys, secrets, channels, notifications string
 }
 
 // Config is how to reach the database.
@@ -83,6 +107,11 @@ func New(ctx context.Context, cfg Config) (*Store, error) {
 			nodes:    cfg.TablePrefix + "nodes",
 			audit:    cfg.TablePrefix + "audit",
 			settings: cfg.TablePrefix + "settings",
+
+			secretKeys:    cfg.TablePrefix + "secret_keys",
+			secrets:       cfg.TablePrefix + "secrets",
+			channels:      cfg.TablePrefix + "channels",
+			notifications: cfg.TablePrefix + "notifications",
 		},
 	}
 
@@ -118,7 +147,8 @@ func (s *Store) Close() error {
 	return s.db.Close()
 }
 
-// q replaces {jobs}, {runs}, {nodes} and {audit} with the prefixed table names.
+// q replaces {jobs}, {runs} and the other table placeholders with the
+// prefixed table names.
 func (s *Store) q(query string) string {
 	return strings.NewReplacer(
 		"{jobs}", s.t.jobs,
@@ -126,6 +156,10 @@ func (s *Store) q(query string) string {
 		"{nodes}", s.t.nodes,
 		"{audit}", s.t.audit,
 		"{settings}", s.t.settings,
+		"{secret_keys}", s.t.secretKeys,
+		"{secrets}", s.t.secrets,
+		"{channels}", s.t.channels,
+		"{notifications}", s.t.notifications,
 	).Replace(query)
 }
 

@@ -17,7 +17,6 @@ func newTestJS() *JS {
 		MaxDuration: 5 * time.Second,
 		MaxRequests: 10,
 		MaxResponse: 1 << 20,
-		Secrets:     map[string]string{"TOKEN": "s3cret"},
 	})
 }
 
@@ -30,7 +29,8 @@ func runJS(t *testing.T, j *JS, ctx context.Context, script string) (string, str
 	}
 
 	out := NewOutput(1 << 16)
-	_, err = j.Run(ctx, Info{JobName: "j1", RunID: "r1", Attempt: 2, ScheduledAt: time.Unix(0, 0)}, raw, out)
+	_, err = j.Run(ctx, Info{JobName: "j1", RunID: "r1", Attempt: 2, ScheduledAt: time.Unix(0, 0),
+		Secrets: map[string]string{"TOKEN": "s3cret"}, Params: map[string]string{"region": "eu"}}, raw, out)
 	text, _, _ := out.Snapshot()
 
 	return text, out.Result(), err
@@ -242,5 +242,12 @@ func TestJSValidate(t *testing.T) {
 	p := CheckJS("const a = 1\nconst a = 2")
 	if len(p) != 1 || p[0].Line != 2 {
 		t.Errorf("CheckJS: %+v", p)
+	}
+}
+
+func TestJSParams(t *testing.T) {
+	out, res, err := runJS(t, newTestJS(), context.Background(), `console.log(params.region); return params`)
+	if err != nil || out != "eu\n" || res != `{"region":"eu"}` {
+		t.Fatalf("out=%q res=%q err=%v", out, res, err)
 	}
 }

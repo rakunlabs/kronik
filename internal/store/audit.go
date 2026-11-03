@@ -39,6 +39,8 @@ type AuditFilter struct {
 	Actor  string
 	Before string
 	Limit  int
+	// Actions keeps only these actions.
+	Actions []string
 }
 
 func (s *Store) ListAudit(ctx context.Context, f AuditFilter) ([]*AuditEntry, error) {
@@ -62,6 +64,10 @@ func (s *Store) ListAudit(ctx context.Context, f AuditFilter) ([]*AuditEntry, er
 
 	if f.Before != "" {
 		add("id < $%d", f.Before)
+	}
+
+	if len(f.Actions) > 0 {
+		add("action = ANY($%d)", f.Actions)
 	}
 
 	query := `SELECT id, at, actor, via, action, job_id, job_name, run_id, detail FROM {audit}`

@@ -16,6 +16,7 @@ import (
 	"github.com/rakunlabs/kronik/internal/config"
 	"github.com/rakunlabs/kronik/internal/executor"
 	"github.com/rakunlabs/kronik/internal/schedule"
+	"github.com/rakunlabs/kronik/internal/settings"
 	"github.com/rakunlabs/kronik/internal/store"
 )
 
@@ -38,6 +39,12 @@ type Scheduler struct {
 	executors executor.Executors
 	// retention is read when the daily cleanup runs; nil uses cfg.
 	retention func() Retention
+	// options are read at every tick; nil is no pause, window or limit.
+	options func() Options
+	// secrets are given to every run; nil is none.
+	secrets func() map[string]string
+	// observer is told about every run that ends; nil is nobody.
+	observer  Observer
 	cfg       config.Scheduler
 	node      string
 	startedAt time.Time
@@ -76,6 +83,46 @@ func New(st *store.Store, executors executor.Executors, cfg config.Scheduler, no
 }
 
 func (s *Scheduler) Node() string { return s.node }
+
+// Options are the settings the scheduler follows while it runs.
+type Options struct {
+	// Paused skips every scheduled run.
+	Paused bool
+	// Windows skip the scheduled runs of the jobs they cover.
+	Windows []settings.Window
+	// TagLimits caps the runs going at once per tag, across replicas.
+	TagLimits map[string]int
+}
+
+// Observer is told when a run ends, for metrics.
+type Observer interface {
+	RunFinished(job *store.Job, run *store.Run, status string, d time.Duration)
+}
+
+// SetOptions makes the scheduler read pause, windows and limits from fn.
+func (s *Scheduler) SetOptions(fn func() Options) { s.options = fn }
+
+// SetSecrets makes the scheduler give runs the secrets fn returns.
+func (s *Scheduler) SetSecrets(fn func() map[string]string) { s.secrets = fn }
+
+// SetObserver tells o about every run that ends.
+func (s *Scheduler) SetObserver(o Observer) { s.observer = o }
+
+func (s *Scheduler) opts() Options {
+	if s.options == nil {
+		return Options{}
+	}
+
+	return s.options()
+}
+
+func (s *Scheduler) secretValues() map[string]string {
+	if s.secrets == nil {
+		return nil
+	}
+
+	return s.secrets()
+}
 
 // Wake makes the scheduler look for work now instead of at the next tick.
 func (s *Scheduler) Wake() {
@@ -124,6 +171,7 @@ func (s *Scheduler) Run(ctx context.Context) error {
 	keep.Go(func() { s.every(keepCtx, stopCheck, s.checkStops) })
 	bg.Go(func() { s.every(ctx, s.heartbeatInterval(), s.recover) })
 	bg.Go(func() { s.cleanupLoop(ctx) })
+	bg.Go(func() { s.every(ctx, alertCheck, s.alertSilent) })
 
 	s.loop(ctx)
 	bg.Wait()
@@ -171,9 +219,10 @@ func (s *Scheduler) loop(ctx context.Context) {
 
 func (s *Scheduler) tick(ctx context.Context) {
 	now := time.Now().UTC()
+	o := s.opts()
 
 	for {
-		n, err := s.store.ScheduleDue(ctx, now, scheduleBatch, s.plan(now))
+		n, err := s.store.ScheduleDue(ctx, now, scheduleBatch, s.plan(now, o))
 		if err != nil {
 			if ctx.Err() == nil {
 				slog.Error("schedule due jobs", "error", err)
@@ -187,14 +236,14 @@ func (s *Scheduler) tick(ctx context.Context) {
 		}
 	}
 
-	s.claim(ctx)
+	s.claim(ctx, o)
 }
 
 // plan returns the run times of a due job: every missed time with catch-up,
 // else only the latest, and its next run time after now. A schedule this
 // replica cannot read (a time zone missing here) is an error: the job is
 // tried again later, by any replica, instead of being turned off.
-func (s *Scheduler) plan(now time.Time) func(*store.Job) (store.Plan, error) {
+func (s *Scheduler) plan(now time.Time, o Options) func(*store.Job) (store.Plan, error) {
 	return func(j *store.Job) (store.Plan, error) {
 		sch, err := schedule.Parse(j.Schedule, j.Timezone)
 		if err != nil {
@@ -209,7 +258,7 @@ func (s *Scheduler) plan(now time.Time) func(*store.Job) (store.Plan, error) {
 		times := sch.Missed(*j.NextRunAt, now, limit)
 		next := sch.NextAfter(times, now)
 
-		p := store.Plan{Times: times}
+		p := store.Plan{Times: times, Skip: skipReason(o, j, now)}
 		if !next.IsZero() {
 			p.Next = &next
 		}
@@ -218,13 +267,33 @@ func (s *Scheduler) plan(now time.Time) func(*store.Job) (store.Plan, error) {
 	}
 }
 
-func (s *Scheduler) claim(ctx context.Context) {
+// skipReason is why the scheduled runs of a job due now are skipped, "" when
+// they run.
+func skipReason(o Options, j *store.Job, now time.Time) string {
+	if o.Paused {
+		return "skipped: all schedules are paused (Settings → Configuration → Scheduling)"
+	}
+
+	for _, w := range o.Windows {
+		if !w.Applies(j.Tags) {
+			continue
+		}
+
+		if in, until := w.Active(now); in {
+			return fmt.Sprintf("skipped: maintenance window %q until %s", w.Expr, until.UTC().Format(time.RFC3339))
+		}
+	}
+
+	return ""
+}
+
+func (s *Scheduler) claim(ctx context.Context, o Options) {
 	free := cap(s.slots) - len(s.slots)
 	if free <= 0 {
 		return
 	}
 
-	claimed, err := s.store.ClaimRuns(ctx, s.node, time.Now().UTC(), free, s.executors.Names())
+	claimed, err := s.store.ClaimRunsLimited(ctx, s.node, time.Now().UTC(), free, s.executors.Names(), o.TagLimits)
 	if err != nil {
 		if ctx.Err() == nil {
 			slog.Error("claim runs", "error", err)
@@ -262,6 +331,7 @@ var (
 
 func (s *Scheduler) execute(ctx context.Context, c store.Claimed) {
 	run, job := c.Run, c.Job
+	start := time.Now()
 	log := slog.With("job", job.Name, "run", run.ID, "attempt", run.Attempt)
 
 	out := executor.NewOutput(s.cfg.MaxOutput)
@@ -288,6 +358,8 @@ func (s *Scheduler) execute(ctx context.Context, c store.Claimed) {
 			RunID:       run.ID,
 			Attempt:     run.Attempt,
 			ScheduledAt: run.ScheduledAt,
+			Secrets:     s.secretValues(),
+			Params:      run.Params,
 		}, job.Config, out)
 
 		stopFlush()
@@ -330,6 +402,11 @@ func (s *Scheduler) execute(ctx context.Context, c store.Claimed) {
 	}
 
 	log.Info("run finished", "status", res.Status, "error", res.Error)
+
+	if s.observer != nil {
+		s.observer.RunFinished(job, run, res.Status, time.Since(start))
+	}
+
 	s.Wake()
 }
 
@@ -480,11 +557,31 @@ func (s *Scheduler) runningIDs() []string {
 	return ids
 }
 
+// alertCheck is how often jobs are checked for the "did not run" alert.
+const alertCheck = 30 * time.Second
+
+// alertSilent raises the alert of jobs without a successful run for their
+// alert time. Each job is taken by one replica (row locks).
+func (s *Scheduler) alertSilent(ctx context.Context) error {
+	alerted, err := s.store.AlertSilent(ctx, time.Now().UTC())
+	if err != nil {
+		return fmt.Errorf("check jobs that did not run; %w", err)
+	}
+
+	for _, a := range alerted {
+		slog.Warn("job did not succeed within its alert time", "job_id", a.JobID, "last_success", a.Since)
+	}
+
+	return nil
+}
+
 // Retention is what the daily cleanup keeps, and when it runs.
 type Retention struct {
 	Runs       time.Duration
 	RunsPerJob int
 	Audit      time.Duration
+	// Notifications deletes sent and failed notifications older than this.
+	Notifications time.Duration
 	// At is the time of day ("01:00") in Zone.
 	At   string
 	Zone string
@@ -567,8 +664,9 @@ func cleanupDue(r Retention, now time.Time) (bool, string) {
 
 // CleanupStats is what one cleanup deleted.
 type CleanupStats struct {
-	Runs  int64 `json:"runs"`
-	Audit int64 `json:"audit"`
+	Runs          int64 `json:"runs"`
+	Audit         int64 `json:"audit"`
+	Notifications int64 `json:"notifications"`
 }
 
 // CleanupNow deletes old runs and audit entries now.
@@ -614,7 +712,16 @@ func (s *Scheduler) Cleanup(ctx context.Context, r Retention) (CleanupStats, err
 		st.Audit = n
 	}
 
-	slog.Info("cleanup done", "runs_deleted", st.Runs, "audit_deleted", st.Audit,
+	if r.Notifications > 0 {
+		n, err := s.store.PruneNotifications(ctx, now.Add(-r.Notifications))
+		if err != nil {
+			return st, fmt.Errorf("prune notifications; %w", err)
+		}
+
+		st.Notifications = n
+	}
+
+	slog.Info("cleanup done", "runs_deleted", st.Runs, "audit_deleted", st.Audit, "notifications_deleted", st.Notifications,
 		"keep_runs", r.Runs, "runs_per_job", r.RunsPerJob, "keep_audit", r.Audit)
 
 	return st, nil

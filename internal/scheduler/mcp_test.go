@@ -35,7 +35,7 @@ func TestAuditAndMCP(t *testing.T) {
 	ctx := context.Background()
 
 	reg := registry()
-	reg[executor.TypeJS] = executor.NewJS(executor.JSLimits{MaxResponse: 1 << 20, MaxDuration: 10 * 1e9, Secrets: map[string]string{"K": "v"}})
+	reg[executor.TypeJS] = executor.NewJS(executor.JSLimits{MaxResponse: 1 << 20, MaxDuration: 10 * 1e9})
 
 	cfg := &config.Config{
 		NodeName: "n1",
@@ -50,7 +50,10 @@ func TestAuditAndMCP(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	srv, err := server.New(cfg, service.New(st, reg, noWake{}), nil, set, nil)
+	svc := service.New(st, reg, noWake{})
+	svc.SetSecrets(func() map[string]string { return cfg.Executor.JS.Secrets })
+
+	srv, err := server.New(cfg, server.Deps{Service: svc, Settings: set})
 	if err != nil {
 		t.Fatal(err)
 	}

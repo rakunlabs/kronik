@@ -112,6 +112,13 @@ func (s *Swarm) Run(ctx context.Context, info Info, raw json.RawMessage, out *Ou
 		return nil, err
 	}
 
+	out.Redact(SecretValues(info.Secrets))
+
+	env, err := runEnv(info, cfg.Env)
+	if err != nil {
+		return nil, err
+	}
+
 	cli, err := s.cli()
 	if err != nil {
 		return nil, err
@@ -124,7 +131,7 @@ func (s *Swarm) Run(ctx context.Context, info Info, raw json.RawMessage, out *Ou
 		Image:           cfg.Image,
 		Command:         cfg.Command,
 		Args:            cfg.Args,
-		Env:             envList(runEnv(info, cfg.Env)),
+		Env:             envList(env),
 		Dir:             cfg.Workdir,
 		User:            cfg.User,
 		Labels:          labels(info, cfg.Labels),

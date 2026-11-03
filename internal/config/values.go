@@ -50,5 +50,25 @@ func (c *Config) Values() settings.Values {
 
 		MCPEnabled:  c.MCP.Enabled,
 		MCPReadOnly: c.MCP.ReadOnly,
+
+		Paused:             c.Maintenance.Paused,
+		MaintenanceWindows: c.Maintenance.Windows,
+		MaintenanceZone:    c.Maintenance.Timezone,
+		TagLimits:          c.Scheduler.TagLimits,
+
+		NotificationRetention: c.Notify.Retention,
+		NotifyEnabled:         c.Notify.Enabled,
+		NotifyBaseURL:         c.Notify.BaseURL,
+		SMTPHost:              c.Notify.SMTPHost,
+		SMTPPort:              c.Notify.SMTPPort,
+		SMTPTLS:               c.Notify.SMTPTLS,
+		SMTPUser:              c.Notify.SMTPUser,
+		SMTPPasswordSecret:    c.Notify.SMTPPasswordSecret,
+		SMTPFrom:              c.Notify.SMTPFrom,
+
+		SecretsRotate: c.Secrets.Rotate,
+
+		MetricsEnabled: c.Metrics.Enabled,
+		MetricsPerJob:  c.Metrics.PerJob,
 	}
 }

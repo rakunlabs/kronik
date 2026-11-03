@@ -20,7 +20,7 @@ func newTestServer(t *testing.T, base string) http.Handler {
 	svc := service.New(nil, executor.Registry{executor.TypeHTTP: executor.NewHTTP()}, nil)
 	ui := fstest.MapFS{"index.html": {Data: []byte("<html>kronik</html>")}}
 
-	srv, err := New(cfg, svc, ui, nil, nil)
+	srv, err := New(cfg, Deps{Service: svc, UI: ui})
 	if err != nil {
 		t.Fatal(err)
 	}

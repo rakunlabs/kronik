@@ -2,6 +2,7 @@ package executor
 
 import (
 	"encoding/json"
+	"fmt"
 	"path"
 	"regexp"
 	"strconv"
@@ -246,9 +247,19 @@ func labels(info Info, extra map[string]string) map[string]string {
 	return out
 }
 
-// runEnv is the job's env plus what kronik tells every run.
-func runEnv(info Info, env map[string]string) map[string]string {
-	out := make(map[string]string, len(env)+5)
+// runEnv is the job's env, with secrets and params filled in, plus what
+// kronik tells every run.
+func runEnv(info Info, env map[string]string) (map[string]string, error) {
+	env, err := expandMap(env, info)
+	if err != nil {
+		return nil, fmt.Errorf("env %w", err)
+	}
+
+	out := make(map[string]string, len(env)+5+len(info.Params))
+	for k, v := range paramEnv(info) {
+		out[k] = v
+	}
+
 	for k, v := range env {
 		out[k] = v
 	}
@@ -259,7 +270,7 @@ func runEnv(info Info, env map[string]string) map[string]string {
 	out["KRONIK_ATTEMPT"] = strconv.Itoa(info.Attempt)
 	out["KRONIK_SCHEDULED_AT"] = info.ScheduledAt.UTC().Format("2006-01-02T15:04:05Z07:00")
 
-	return out
+	return out, nil
 }
 
 // shortID is a name-safe piece of a run id.

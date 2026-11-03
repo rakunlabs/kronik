@@ -6,7 +6,6 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/http"
-	"slices"
 	"strings"
 	"time"
 	"unicode"
@@ -20,9 +19,12 @@ import (
 	mtelemetry "github.com/rakunlabs/ada/middleware/telemetry"
 
 	"github.com/rakunlabs/kronik/internal/config"
+	"github.com/rakunlabs/kronik/internal/notify"
 	"github.com/rakunlabs/kronik/internal/scheduler"
+	"github.com/rakunlabs/kronik/internal/secrets"
 	"github.com/rakunlabs/kronik/internal/service"
 	"github.com/rakunlabs/kronik/internal/settings"
+	"github.com/rakunlabs/kronik/internal/store"
 )
 
 const (
@@ -38,11 +40,29 @@ type Server struct {
 	nodeTimeout time.Duration
 	scheduler   schedulerInfo
 	userHeader  string
-	secrets     []string
 	// set holds the settings changed from the UI; nil uses the config.
 	set     *settings.Manager
 	base    settings.Values
 	cleaner Cleaner
+	vault   *secrets.Vault
+	sender  *notify.Sender
+	live    *Live
+	bus     *store.Bus
+	metrics bool
+}
+
+// Deps are the parts the server works with. Only Service is required.
+type Deps struct {
+	Service  *service.Service
+	UI       fs.FS
+	Settings *settings.Manager
+	Cleaner  Cleaner
+	Vault    *secrets.Vault
+	Sender   *notify.Sender
+	Live     *Live
+	Bus      *store.Bus
+	// MetricsActive is set when a collector receives the metrics.
+	MetricsActive bool
 }
 
 // Cleaner runs the retention cleanup on demand.
@@ -111,8 +131,8 @@ func newSchedulerInfo(c config.Scheduler) schedulerInfo {
 	}
 }
 
-func Start(ctx context.Context, cfg *config.Config, svc *service.Service, ui fs.FS, set *settings.Manager, cleaner Cleaner) error {
-	server, err := New(cfg, svc, ui, set, cleaner)
+func Start(ctx context.Context, cfg *config.Config, d Deps) error {
+	server, err := New(cfg, d)
 	if err != nil {
 		return err
 	}
@@ -120,20 +140,34 @@ func Start(ctx context.Context, cfg *config.Config, svc *service.Service, ui fs.
 	return server.StartWithContext(ctx, cfg.Server.Host+":"+cfg.Server.Port)
 }
 
-// New builds the server. set and cleaner may be nil (tests): the settings
-// are then the configuration's and cannot be changed.
-func New(cfg *config.Config, svc *service.Service, ui fs.FS, set *settings.Manager, cleaner Cleaner) (*ada.Server, error) {
+// New builds the server. Settings, Cleaner and the rest may be nil
+// (tests): the settings are then the configuration's and cannot be changed.
+func New(cfg *config.Config, d Deps) (*ada.Server, error) {
 	s := &Server{
-		svc:         svc,
+		svc:         d.Service,
 		node:        cfg.NodeName,
 		nodeTimeout: cfg.Scheduler.NodeTimeout,
 		scheduler:   newSchedulerInfo(cfg.Scheduler),
 		userHeader:  cfg.Server.UserHeader,
-		secrets:     secretNames(cfg.Executor.JS.Secrets),
-		set:         set,
+		set:         d.Settings,
 		base:        cfg.Values(),
-		cleaner:     cleaner,
+		cleaner:     d.Cleaner,
+		vault:       d.Vault,
+		sender:      d.Sender,
+		live:        d.Live,
+		bus:         d.Bus,
+		metrics:     d.MetricsActive,
 	}
+
+	if s.vault == nil {
+		s.vault = secrets.NewVault(nil, nil, cfg.Executor.JS.Secrets)
+	}
+
+	if s.live == nil {
+		s.live = NewLive()
+	}
+
+	ui := d.UI
 
 	server := ada.New()
 	server.Use(
@@ -156,6 +190,14 @@ func New(cfg *config.Config, svc *service.Service, ui fs.FS, set *settings.Manag
 	csrf := http.NewCrossOriginProtection()
 
 	s.routes(root.Group(apiPrefix, limitBody, csrf.Handler, requireJSON, s.withActor))
+
+	// Webhooks are called by other systems, without the proxy's session:
+	// the token in the path is the credential, so no CSRF check applies.
+	hooks := root.Group("/hook", limitBody, s.withActor)
+	hooks.POST("/{token}", s.hookTrigger)
+	hooks.GET("/{token}", s.hookTrigger)
+	hooks.POST("/{token}/report", s.hookReport)
+	hooks.GET("/{token}/report", s.hookReport)
 
 	// Always mounted: turning MCP off or read-only in the settings applies
 	// at once, without a restart.
@@ -183,12 +225,19 @@ func (s *Server) routes(api *ada.Mux) {
 	api.POST("/jobs/{id}/enable", s.enableJob)
 	api.POST("/jobs/{id}/disable", s.disableJob)
 	api.POST("/jobs/{id}/trigger", s.triggerJob)
+	api.POST("/jobs/{id}/hook", s.newHook)
+	api.DELETE("/jobs/{id}/hook", s.removeHook)
+	api.GET("/jobs/{id}/stats", s.jobStats)
+	api.GET("/jobs/{id}/history", s.jobHistory)
+	api.POST("/jobs/bulk", s.bulkJobs)
+	api.GET("/calendar", s.calendar)
 
 	api.POST("/jobs/test", s.testJob)
 	api.POST("/script/check", s.checkScript)
 
 	api.GET("/runs", s.listRuns)
 	api.GET("/runs/{id}", s.getRun)
+	api.GET("/runs/{id}/events", s.runEvents)
 	api.POST("/runs/{id}/cancel", s.cancelRun)
 
 	api.GET("/audit", s.listAudit)
@@ -197,6 +246,18 @@ func (s *Server) routes(api *ada.Mux) {
 	api.PUT("/settings", s.putSettings)
 	api.POST("/settings/cleanup", s.cleanupNow)
 	api.POST("/settings/check/{executor}", s.checkExecutor)
+
+	api.GET("/secrets", s.listSecrets)
+	api.PUT("/secrets/{name}", s.putSecret)
+	api.DELETE("/secrets/{name}", s.deleteSecret)
+	api.POST("/secrets/rotate", s.rotateSecrets)
+
+	api.GET("/channels", s.listChannels)
+	api.POST("/channels", s.createChannel)
+	api.PUT("/channels/{id}", s.updateChannel)
+	api.DELETE("/channels/{id}", s.deleteChannel)
+	api.POST("/channels/{id}/test", s.testChannel)
+	api.GET("/notifications", s.listNotifications)
 
 	// Unknown API paths must not fall through to the SPA index.
 	api.HandleFuncWildcard("/", func(c *ada.Context) error {
@@ -261,17 +322,6 @@ func (s *Server) withActor(next http.Handler) http.Handler {
 
 		next.ServeHTTP(w, r.WithContext(service.WithActor(r.Context(), service.Actor{User: s.userOf(r), Via: via})))
 	})
-}
-
-func secretNames(m map[string]string) []string {
-	names := make([]string, 0, len(m))
-	for k := range m {
-		names = append(names, k)
-	}
-
-	slices.Sort(names)
-
-	return names
 }
 
 // requireJSON refuses a body sent as anything but JSON.

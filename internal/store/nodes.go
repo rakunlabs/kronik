@@ -155,3 +155,16 @@ func (s *Store) Stats(ctx context.Context, now time.Time) (*Stats, error) {
 
 	return &st, err
 }
+
+// Gauges are the numbers of jobs and runs for the metrics.
+func (s *Store) Gauges(ctx context.Context) (jobs, enabled, failing, queued, running int64, err error) {
+	err = s.db.QueryRowContext(ctx, s.q(`SELECT
+			(SELECT COUNT(*) FROM {jobs}),
+			(SELECT COUNT(*) FROM {jobs} WHERE enabled),
+			(SELECT COUNT(*) FROM {jobs} WHERE enabled AND health = $3),
+			(SELECT COUNT(*) FROM {runs} WHERE status = $1),
+			(SELECT COUNT(*) FROM {runs} WHERE status = $2)`), StatusQueued, StatusRunning, HealthFailing).
+		Scan(&jobs, &enabled, &failing, &queued, &running)
+
+	return
+}

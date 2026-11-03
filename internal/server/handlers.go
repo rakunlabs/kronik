@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -43,11 +44,13 @@ func (s *Server) info(c *ada.Context) error {
 		"scheduler":   s.scheduler,
 		"user":        s.userOf(c.Request),
 		"user_header": s.userHeader,
-		"secrets":     s.secrets,
+		"secrets":     s.secretNames(),
 		"mcp":         map[string]any{"enabled": s.values().MCPEnabled, "read_only": s.values().MCPReadOnly},
 		"environment": s.env(),
 		"retention":   s.retentionInfo(),
 		"settings":    map[string]any{"editable": s.set != nil},
+		"paused":      s.values().Paused,
+		"metrics":     map[string]any{"enabled": s.values().MetricsEnabled, "collector": s.metrics},
 	})
 }
 
@@ -174,7 +177,17 @@ func (s *Server) setEnabled(c *ada.Context, enabled bool) error {
 }
 
 func (s *Server) triggerJob(c *ada.Context) error {
-	id, err := s.svc.Trigger(c.Request.Context(), c.Request.PathValue("id"))
+	var in struct {
+		Params map[string]string `json:"params"`
+	}
+
+	if c.Request.ContentLength != 0 {
+		if err := json.NewDecoder(c.Request.Body).Decode(&in); err != nil && !errors.Is(err, io.EOF) {
+			return ada.NewHTTPError(http.StatusBadRequest, "invalid body: "+err.Error())
+		}
+	}
+
+	id, err := s.svc.TriggerWith(c.Request.Context(), c.Request.PathValue("id"), in.Params)
 	if err != nil {
 		return apiErr(err)
 	}
@@ -280,9 +293,13 @@ func (s *Server) cancelRun(c *ada.Context) error {
 }
 
 func (s *Server) testJob(c *ada.Context) error {
-	in, err := bindJob(c)
-	if err != nil {
-		return err
+	var in service.TestInput
+
+	dec := json.NewDecoder(c.Request.Body)
+	dec.DisallowUnknownFields()
+
+	if err := dec.Decode(&in); err != nil {
+		return ada.NewHTTPError(http.StatusBadRequest, "invalid body: "+err.Error())
 	}
 
 	t, err := s.svc.Test(c.Request.Context(), in)

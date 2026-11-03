@@ -83,3 +83,41 @@ func TestEveryDefHasAField(t *testing.T) {
 		t.Errorf("%d fields for %d settings", len(fields), len(Defs))
 	}
 }
+
+func TestWindows(t *testing.T) {
+	w, err := ParseWindow("0 2 * * *|2h|reports, db", "UTC")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	in := time.Date(2026, 11, 3, 3, 30, 0, 0, time.UTC)
+	if ok, until := w.Active(in); !ok || !until.Equal(time.Date(2026, 11, 3, 4, 0, 0, 0, time.UTC)) {
+		t.Fatalf("03:30: %v %v", ok, until)
+	}
+
+	if ok, _ := w.Active(time.Date(2026, 11, 3, 4, 0, 0, 0, time.UTC)); ok {
+		t.Fatal("04:00 is after the window")
+	}
+
+	if ok, _ := w.Active(time.Date(2026, 11, 3, 2, 0, 0, 0, time.UTC)); !ok {
+		t.Fatal("02:00 is in the window")
+	}
+
+	if !w.Applies([]string{"db"}) || w.Applies([]string{"web"}) {
+		t.Fatal("tags")
+	}
+
+	for _, bad := range []string{"0 2 * * *", "nope|2h", "0 2 * * *|-1h", "0 2 * * *|x"} {
+		if _, err := ParseWindow(bad, "UTC"); err == nil {
+			t.Errorf("%q accepted", bad)
+		}
+	}
+
+	if tag, n, err := ParseTagLimit(" reports = 2 "); err != nil || tag != "reports" || n != 2 {
+		t.Fatalf("%q %d %v", tag, n, err)
+	}
+
+	if _, _, err := ParseTagLimit("x=0"); err == nil {
+		t.Fatal("0 accepted")
+	}
+}

@@ -25,6 +25,14 @@ type Info struct {
 	RunID       string
 	Attempt     int
 	ScheduledAt time.Time
+	// Secrets are the secrets in effect, name → value: secrets.NAME in a
+	// script, {{secret.NAME}} in other configs. They are hidden in the
+	// output.
+	Secrets map[string]string
+	// Params are the values given to this run: params.NAME in a script,
+	// {{param.NAME}} elsewhere and KRONIK_PARAM_<NAME> in commands and
+	// containers.
+	Params map[string]string
 }
 
 type Executor interface {

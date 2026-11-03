@@ -31,6 +31,8 @@ type Manager struct {
 	src  Source
 	base Values
 
+	refresh chan struct{}
+
 	mu        sync.RWMutex
 	current   Values
 	overrides map[string]Stored
@@ -41,7 +43,15 @@ type Manager struct {
 const refreshEvery = 5 * time.Second
 
 func NewManager(src Source, base Values) *Manager {
-	return &Manager{src: src, base: base, current: base.Clone(), overrides: map[string]Stored{}}
+	return &Manager{src: src, base: base, current: base.Clone(), overrides: map[string]Stored{}, refresh: make(chan struct{}, 1)}
+}
+
+// Refresh makes Run read the overrides now.
+func (m *Manager) Refresh() {
+	select {
+	case m.refresh <- struct{}{}:
+	default:
+	}
 }
 
 // Load reads the overrides once.
@@ -56,7 +66,8 @@ func (m *Manager) Load(ctx context.Context) error {
 	return nil
 }
 
-// Run reads the overrides until ctx ends.
+// Run reads the overrides until ctx ends: every few seconds, and at once
+// when Refresh is called (another replica said they changed).
 func (m *Manager) Run(ctx context.Context) {
 	t := time.NewTicker(refreshEvery)
 	defer t.Stop()
@@ -65,6 +76,7 @@ func (m *Manager) Run(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
+		case <-m.refresh:
 		case <-t.C:
 			if err := m.Load(ctx); err != nil && ctx.Err() == nil {
 				slog.Warn("read settings", "error", err)
@@ -225,6 +237,10 @@ func (v *Values) check() error {
 
 	if !v.HTTP && !v.JS && !v.Command && !v.Docker && !v.Swarm && !v.Kubernetes {
 		return fmt.Errorf("turn on at least one executor")
+	}
+
+	if err := v.checkScheduling(); err != nil {
+		return err
 	}
 
 	return nil

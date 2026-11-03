@@ -123,6 +123,13 @@ func (d *Docker) Run(ctx context.Context, info Info, raw json.RawMessage, out *O
 		return nil, err
 	}
 
+	out.Redact(SecretValues(info.Secrets))
+
+	env, err := runEnv(info, cfg.Env)
+	if err != nil {
+		return nil, err
+	}
+
 	cli, err := d.cli()
 	if err != nil {
 		return nil, err
@@ -166,7 +173,7 @@ func (d *Docker) Run(ctx context.Context, info Info, raw json.RawMessage, out *O
 			Image:      cfg.Image,
 			Entrypoint: cfg.Command,
 			Cmd:        cfg.Args,
-			Env:        envList(runEnv(info, cfg.Env)),
+			Env:        envList(env),
 			WorkingDir: cfg.Workdir,
 			User:       cfg.User,
 			Labels:     labels(info, cfg.Labels),

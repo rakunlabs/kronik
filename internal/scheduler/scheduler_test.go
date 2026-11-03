@@ -49,7 +49,7 @@ func newStore(t *testing.T) (*store.Store, config.Store) {
 		}
 		defer func() { _ = db.Close() }()
 
-		for _, table := range []string{"runs", "jobs", "nodes", "migrations"} {
+		for _, table := range []string{"notifications", "channels", "secrets", "secret_keys", "runs", "jobs", "nodes", "audit", "settings", "migrations"} {
 			_, _ = db.Exec("DROP TABLE IF EXISTS " + prefix + table + " CASCADE")
 		}
 	})

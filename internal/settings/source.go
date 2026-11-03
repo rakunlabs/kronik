@@ -8,8 +8,12 @@ import (
 	"github.com/rakunlabs/kronik/internal/store"
 )
 
-// StoreSource reads and writes the overrides in the store.
-type StoreSource struct{ Store *store.Store }
+// StoreSource reads and writes the overrides in the store, and tells the
+// other replicas through Bus (may be nil) when they changed.
+type StoreSource struct {
+	Store *store.Store
+	Bus   *store.Bus
+}
 
 func (s StoreSource) LoadSettings(ctx context.Context) (map[string]Stored, error) {
 	all, err := s.Store.Settings(ctx)
@@ -26,5 +30,11 @@ func (s StoreSource) LoadSettings(ctx context.Context) (map[string]Stored, error
 }
 
 func (s StoreSource) PutSettings(ctx context.Context, values map[string]json.RawMessage, reset []string, by string, now time.Time) error {
-	return s.Store.PutSettings(ctx, values, reset, by, now)
+	if err := s.Store.PutSettings(ctx, values, reset, by, now); err != nil {
+		return err
+	}
+
+	s.Bus.Send(ctx, store.TopicSettings, "")
+
+	return nil
 }

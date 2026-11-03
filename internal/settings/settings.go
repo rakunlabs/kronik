@@ -51,7 +51,11 @@ var Groups = []struct {
 	ID, Label, Description string
 }{
 	{"general", "General", "How this installation shows itself."},
+	{"scheduling", "Scheduling", "Pause everything, maintenance windows and how many runs of a tag go at once."},
 	{"retention", "Retention", "What is kept and when it is cleaned up."},
+	{"notifications", "Notifications", "Messages when jobs fail, recover or do not run. Channels are set under Settings → Notifications."},
+	{"secrets", "Secrets", "How the secrets set from the UI are encrypted."},
+	{"metrics", "Metrics", "Run and job metrics sent through OpenTelemetry."},
 	{"executors", "Executors", "What jobs may run. A replica runs only the executors turned on here."},
 	{"js", "JavaScript", "Limits of JavaScript jobs."},
 	{"docker", "Docker", "Containers on a Docker Engine (the replica's docker.sock or a remote daemon)."},
@@ -67,6 +71,15 @@ var Defs = []Def{
 	{Key: "environment_color", Group: "general", Label: "Environment colour", Type: TypeString, Placeholder: "from the name",
 		Description: "A CSS colour (#dc2626). Empty: red for prod, amber for preprod/staging, green for the rest."},
 
+	{Key: "maintenance.paused", Group: "scheduling", Label: "Pause all schedules", Type: TypeBool,
+		Description: "Scheduled runs are skipped (recorded as skipped) until this is turned off. Runs started by hand, webhooks and chains still run."},
+	{Key: "maintenance.windows", Group: "scheduling", Label: "Maintenance windows", Type: TypeList, Placeholder: "0 2 * * 0|2h",
+		Description: "schedule|duration[|tag,tag]: from each time of the cron schedule, for the duration, scheduled runs are skipped — of the jobs with one of the tags, or of all. 0 2 * * 0|2h is Sundays 02:00–04:00."},
+	{Key: "maintenance.timezone", Group: "scheduling", Label: "Window time zone", Type: TypeString, Placeholder: "UTC",
+		Description: "IANA time zone of the window schedules."},
+	{Key: "limits.tags", Group: "scheduling", Label: "Runs at once per tag", Type: TypeList, Placeholder: "reports=2",
+		Description: "tag=n: at most n runs of the jobs with this tag run at the same time, across all replicas. The others wait in the queue."},
+
 	{Key: "retention.runs", Group: "retention", Label: "Keep runs for", Type: TypeDuration, Placeholder: "720h",
 		Description: "Finished runs older than this are deleted. 0 keeps them. Use hours: 720h is 30 days."},
 	{Key: "retention.runs_per_job", Group: "retention", Label: "Runs kept per job", Type: TypeInt, Min: i64(0), Max: i64(1_000_000),
@@ -77,6 +90,30 @@ var Defs = []Def{
 		Description: "Time of day the cleanup runs, once a day, on one replica."},
 	{Key: "retention.timezone", Group: "retention", Label: "Cleanup time zone", Type: TypeString, Placeholder: "UTC",
 		Description: "IANA time zone of the cleanup time."},
+
+	{Key: "retention.notifications", Group: "retention", Label: "Keep notifications for", Type: TypeDuration, Placeholder: "720h",
+		Description: "Sent and failed notifications older than this are deleted. 0 keeps them."},
+
+	{Key: "notify.enabled", Group: "notifications", Label: "Send notifications", Type: TypeBool,
+		Description: "Off: notifications are still recorded, nothing is sent until this is turned on again."},
+	{Key: "notify.base_url", Group: "notifications", Label: "kronik's address", Type: TypeString, Placeholder: "https://cron.example.com",
+		Description: "The address users open kronik at, for links to the job and run in messages."},
+	{Key: "notify.smtp_host", Group: "notifications", Label: "SMTP server", Type: TypeString, Placeholder: "smtp.example.com",
+		Description: "For e-mail channels."},
+	{Key: "notify.smtp_port", Group: "notifications", Label: "SMTP port", Type: TypeInt, Min: i64(1), Max: i64(65535)},
+	{Key: "notify.smtp_tls", Group: "notifications", Label: "SMTP security", Type: TypeChoice, Choices: []string{"starttls", "tls", "none"}},
+	{Key: "notify.smtp_user", Group: "notifications", Label: "SMTP user", Type: TypeString},
+	{Key: "notify.smtp_password_secret", Group: "notifications", Label: "SMTP password secret", Type: TypeString, Placeholder: "SMTP_PASSWORD",
+		Description: "Name of the secret (Settings → Secrets) that holds the SMTP password."},
+	{Key: "notify.smtp_from", Group: "notifications", Label: "From address", Type: TypeString, Placeholder: "kronik@example.com"},
+
+	{Key: "secrets.rotate", Group: "secrets", Label: "Rotate the data key after", Type: TypeDuration, Placeholder: "90d",
+		Description: "Once the data key is this old, one replica makes a new one and re-encrypts every secret with it; old keys are deleted when no secret uses them. 0 rotates only by hand."},
+
+	{Key: "metrics.enabled", Group: "metrics", Label: "Send metrics", Type: TypeBool,
+		Description: "Runs, durations, queue and job health as OpenTelemetry metrics. Sent only when a collector is set (OTEL_EXPORTER_OTLP_ENDPOINT)."},
+	{Key: "metrics.per_job", Group: "metrics", Label: "Per job", Type: TypeBool,
+		Description: "Add the job's name to the run metrics. Off keeps the number of series small with many jobs."},
 
 	{Key: "executor.http", Group: "executors", Label: "HTTP requests", Type: TypeBool,
 		Description: "Jobs that send an HTTP request."},

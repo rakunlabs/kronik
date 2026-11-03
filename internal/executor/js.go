@@ -28,9 +28,6 @@ type JSLimits struct {
 	MaxRequests int
 	// MaxResponse is the largest response body fetch reads.
 	MaxResponse int64
-	// Secrets are given to every script as secrets.NAME. They come from the
-	// replica's configuration and are never stored with a job or shown.
-	Secrets map[string]string
 }
 
 type JS struct {
@@ -40,25 +37,6 @@ type JS struct {
 
 func NewJS(limits JSLimits) *JS {
 	return &JS{limits: limits, fetch: newFetcher(limits.MaxResponse)}
-}
-
-func (j *JS) secretValues() []string {
-	out := make([]string, 0, len(j.limits.Secrets))
-	for _, v := range j.limits.Secrets {
-		out = append(out, v)
-	}
-
-	return out
-}
-
-// SecretNames lists the secrets a script can read, for the editor.
-func (j *JS) SecretNames() []string {
-	names := make([]string, 0, len(j.limits.Secrets))
-	for k := range j.limits.Secrets {
-		names = append(names, k)
-	}
-
-	return names
 }
 
 const (
@@ -253,7 +231,7 @@ func (j *JS) Exec(ctx context.Context, info Info, cfg *JSConfig, out *Output) (s
 		return "", err
 	}
 
-	out.Redact(j.secretValues())
+	out.Redact(SecretValues(info.Secrets))
 
 	l := newLoop(ctx, j, out)
 	defer l.close()

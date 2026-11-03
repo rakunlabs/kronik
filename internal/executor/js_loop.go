@@ -404,8 +404,15 @@ func (l *loop) globals(info Info, env map[string]string) error {
 	}
 
 	secrets := vm.NewObject()
-	for k, v := range l.js.limits.Secrets {
+	for k, v := range info.Secrets {
 		if err := secrets.Set(k, v); err != nil {
+			return err
+		}
+	}
+
+	params := vm.NewObject()
+	for k, v := range info.Params {
+		if err := params.Set(k, v); err != nil {
 			return err
 		}
 	}
@@ -422,6 +429,7 @@ func (l *loop) globals(info Info, env map[string]string) error {
 		"job":     jobObj,
 		"env":     envObj,
 		"secrets": secrets,
+		"params":  params,
 		"sleep":   l.sleep,
 	} {
 		if err := vm.Set(name, v); err != nil {
@@ -448,7 +456,7 @@ func (l *loop) globals(info Info, env map[string]string) error {
 	}
 
 	// Nothing a script does may be undone by it reassigning these.
-	for _, name := range []string{"job", "env", "secrets"} {
+	for _, name := range []string{"job", "env", "secrets", "params"} {
 		if _, err := vm.RunString("Object.freeze(" + name + ")"); err != nil {
 			return err
 		}
