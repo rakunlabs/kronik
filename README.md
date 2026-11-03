@@ -3,6 +3,8 @@
 # kronik
 
 [![License](https://img.shields.io/github/license/rakunlabs/kronik?color=blue&style=flat-square)](https://raw.githubusercontent.com/rakunlabs/kronik/main/LICENSE)
+[![Coverage](https://img.shields.io/sonar/coverage/rakunlabs_kronik?logo=sonarcloud&server=https%3A%2F%2Fsonarcloud.io&style=flat-square)](https://sonarcloud.io/summary/overall?id=rakunlabs_kronik)
+[![GitHub Workflow Status](https://img.shields.io/github/actions/workflow/status/rakunlabs/kronik/test.yml?branch=main&logo=github&style=flat-square&label=ci)](https://github.com/rakunlabs/kronik/actions)
 
 Cron jobs with a web UI. One binary, jobs and runs stored in PostgreSQL. Run
 as many replicas as you like; each scheduled time runs exactly once.
