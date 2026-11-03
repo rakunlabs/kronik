@@ -54,7 +54,6 @@ var Groups = []struct {
 	{"scheduling", "Scheduling", "Pause everything, maintenance windows and how many runs of a tag go at once."},
 	{"retention", "Retention", "What is kept and when it is cleaned up."},
 	{"notifications", "Notifications", "Messages when jobs fail, recover or do not run. Channels are set under Settings → Notifications."},
-	{"secrets", "Secrets", "How the secrets set from the UI are encrypted."},
 	{"metrics", "Metrics", "Run and job metrics sent through OpenTelemetry."},
 	{"executors", "Executors", "What jobs may run. A replica runs only the executors turned on here."},
 	{"js", "JavaScript", "Limits of JavaScript jobs."},
@@ -106,9 +105,6 @@ var Defs = []Def{
 	{Key: "notify.smtp_password_secret", Group: "notifications", Label: "SMTP password secret", Type: TypeString, Placeholder: "SMTP_PASSWORD",
 		Description: "Name of the secret (Settings → Secrets) that holds the SMTP password."},
 	{Key: "notify.smtp_from", Group: "notifications", Label: "From address", Type: TypeString, Placeholder: "kronik@example.com"},
-
-	{Key: "secrets.rotate", Group: "secrets", Label: "Rotate the data key after", Type: TypeDuration, Placeholder: "90d",
-		Description: "Once the data key is this old, one replica makes a new one and re-encrypts every secret with it; old keys are deleted when no secret uses them. 0 rotates only by hand."},
 
 	{Key: "metrics.enabled", Group: "metrics", Label: "Send metrics", Type: TypeBool,
 		Description: "Runs, durations, queue and job health as OpenTelemetry metrics. Sent only when a collector is set (OTEL_EXPORTER_OTLP_ENDPOINT)."},

@@ -15,7 +15,9 @@ KRONIK_STORE_DSN='postgres://kronik:secret@db:5432/kronik?sslmode=require' kroni
 
 Tables are created on start; every one starts with `kronik_`
 (`store.table_prefix`), so kronik can share a schema with other applications.
-Migrations take a lock, so replicas can start together. `GET /healthz` answers `OK` while the database is reachable.
+Migrations take a lock, so replicas can start together. When the user of
+`store.dsn` may not create tables, give one that may as `store.migrate_dsn`:
+it is used only for the migrations, then closed. `GET /healthz` answers `OK` while the database is reachable.
 
 On SIGTERM a replica stops taking new runs and gives the runs it has going
 `scheduler.shutdown_timeout` to finish. Then it cancels them, waits up to 10s
@@ -24,14 +26,17 @@ period to `shutdown_timeout` + 30s (the examples use 60s).
 
 ## Configuration
 
-Environment variables with the `KRONIK_` prefix, or a `kronik.yaml` (or
-`CONFIG_FILE`). Nested keys are joined with `_`. Values marked **UI** are
+Environment variables with the `KRONIK_` prefix, a `kronik.yaml` (or
+`CONFIG_FILE`), or a secret store (Vault, Consul, AWS Secrets Manager / SSM,
+Azure Key Vault, GCP Secret / Parameter Manager; see the
+[README](README.md#configuration)). Nested keys are joined with `_`. Values marked **UI** are
 only the starting point: they can be changed from *Settings → Configuration*
 (see below), and a value set there wins.
 
 | Variable | Default | |
 | --- | --- | --- |
 | `KRONIK_STORE_DSN` | | PostgreSQL connection string, required |
+| `KRONIK_STORE_MIGRATE_DSN` | the DSN | Connection used only to create and change the tables, for when the `DSN` user may not |
 | `KRONIK_STORE_TABLE_PREFIX` | `kronik_` | Prefix of every table (letters, digits, `_`) |
 | `KRONIK_STORE_MAX_OPEN_CONNS` | `10` | Connection pool size |
 | `KRONIK_SERVER_HOST` / `_PORT` | `` / `8080` | Listen address |
@@ -56,9 +61,7 @@ only the starting point: they can be changed from *Settings → Configuration*
 | `KRONIK_EXECUTOR_JS_MAX_REQUESTS` | `1000` | **UI** `fetch` calls per run; `0` is no limit |
 | `KRONIK_EXECUTOR_JS_MAX_RESPONSE` | `10485760` | **UI** Largest response body `fetch` reads |
 | `KRONIK_SECRET_<NAME>` | | A secret from the environment, `secrets.<NAME>` |
-| `KRONIK_SECRETS_KEY` | | Master key for secrets set from the UI: 32 bytes base64 or hex (`openssl rand -base64 32`), or a passphrase of 16+ characters. The same on every replica |
-| `KRONIK_SECRETS_OLD_KEYS` | | Earlier master keys, while moving to a new one |
-| `KRONIK_SECRETS_ROTATE` | `2160h` | **UI** Make a new data key once the active one is this old; `0` is by hand only |
+| `KRONIK_SECRETS_KEY` | empty | Encrypts the secrets set from the UI: any text, even empty (its SHA-256 is the key). The same on every replica; see [Secrets](#secrets) to change it |
 | `KRONIK_NOTIFY_ENABLED` | `true` | **UI** Send notifications |
 | `KRONIK_NOTIFY_BASE_URL` | | **UI** kronik's address, for links in messages |
 | `KRONIK_NOTIFY_SMTP_HOST` / `_PORT` / `_USER` / `_PASSWORD_SECRET` / `_FROM` / `_TLS` | `587`, `starttls` | **UI** E-mail; the password is the name of a secret |
@@ -106,9 +109,9 @@ Resetting a setting goes back to the configuration's value.
 - Turning on an executor that reaches the host or cluster (commands,
   Docker, Swarm, Kubernetes, privileged containers, mounts) asks first.
 
-What differs per replica or needs a restart stays in the environment: the
+What differs per replica or needs a restart stays in the configuration: the
 database, the listen address, the user header, the poll interval, the
-number of runs at once, the shutdown wait and the secrets master key.
+number of runs at once, the shutdown wait and the secrets key.
 
 Replicas tell each other about changes at once with PostgreSQL
 `LISTEN/NOTIFY` (a channel named after the table prefix): a queued run, a
@@ -318,14 +321,14 @@ a mistake, not a job that sets out to show one (encoded, split up): anyone
 who can edit or test a job can read every secret.
 
 **Encryption.** Each value is sealed with AES-256-GCM under a data key; data
-keys are sealed under the master key `KRONIK_SECRETS_KEY`, which is never
-stored. Without it secrets come only from the environment. Rotation (*Rotate
-now*, or automatically once the data key is `secrets.rotate` old, on one
-replica) makes a new data key, seals every secret again with it and deletes
-the keys no secret uses. To change the master key: set the new one as
-`KRONIK_SECRETS_KEY` and the old one in `KRONIK_SECRETS_OLD_KEYS` on every
-replica, restart, rotate, then drop the old key. A replica with another
-master key cannot read the secrets and says so on the page.
+keys are sealed under the master key, the SHA-256 of `secrets.key`
+(`KRONIK_SECRETS_KEY`). The key may be any text, even empty, and is never
+stored. To change it, use *Settings → Secrets → Change the key*: the data
+keys are sealed again under the new one (the values stay as they are) and
+running replicas keep working. Then set the new key as `KRONIK_SECRETS_KEY`
+on every replica **before it restarts**: a replica started with the old key
+cannot read the secrets. Until then the page warns that the configuration is
+behind.
 
 ## Params
 
@@ -543,7 +546,7 @@ JSON under `/api/v1` (below `server.base_path`). Bodies must be sent as
 | `POST /settings/check/{docker,swarm,kubernetes}` | Try the connection |
 | `POST /settings/cleanup` | Run the retention cleanup now |
 | `GET /secrets` · `PUT /secrets/{name}` · `DELETE /secrets/{name}` | Names only; `PUT` takes `{"description", "value"}` (no value keeps it) |
-| `POST /secrets/rotate` | New data key, every secret encrypted again |
+| `PUT /secret-key` | `{"key"}`: seal the secrets under a new key; set it in every replica's configuration too |
 | `GET /channels` · `POST /channels` · `PUT/DELETE /channels/{id}` · `POST /channels/{id}/test` | Notification channels |
 | `GET /notifications?job_id=&limit=` | Sent and pending notifications |
 | `GET /schedule/next?schedule=&timezone=&n=` | Next run times of an expression |

@@ -66,8 +66,6 @@ func (c *Config) Values() settings.Values {
 		SMTPPasswordSecret:    c.Notify.SMTPPasswordSecret,
 		SMTPFrom:              c.Notify.SMTPFrom,
 
-		SecretsRotate: c.Secrets.Rotate,
-
 		MetricsEnabled: c.Metrics.Enabled,
 		MetricsPerJob:  c.Metrics.PerJob,
 	}

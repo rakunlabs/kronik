@@ -56,23 +56,45 @@ func (s *Store) AddSecretKey(ctx context.Context, k *SecretKey) error {
 	})
 }
 
-// RewrapSecretKey stores a data key wrapped by another master key.
-func (s *Store) RewrapSecretKey(ctx context.Context, id string, wrapped []byte, master string) error {
-	_, err := s.db.ExecContext(ctx, s.q(`UPDATE {secret_keys} SET wrapped = $2, master = $3 WHERE id = $1`), id, wrapped, master)
-
-	return err
+// Rewrap is a data key wrapped by another master key.
+type Rewrap struct {
+	ID      string
+	Wrapped []byte
+	Master  string
+	// From is the master key it is wrapped by now.
+	From string
 }
 
-// DropUnusedSecretKeys deletes the keys that are not active and encrypt no
-// secret, created before the given time.
-func (s *Store) DropUnusedSecretKeys(ctx context.Context, before time.Time) (int64, error) {
-	res, err := s.db.ExecContext(ctx, s.q(`DELETE FROM {secret_keys} k WHERE NOT k.active AND k.created_at < $1
-		AND NOT EXISTS (SELECT 1 FROM {secrets} s WHERE s.key_id = k.id)`), before)
-	if err != nil {
-		return 0, err
-	}
+// RewrapSecretKeys stores the data keys wrapped by other master keys, all
+// or none. It fails with a conflict when a key changed or was added
+// meanwhile.
+func (s *Store) RewrapSecretKeys(ctx context.Context, keys []Rewrap) error {
+	return s.inTxRetry(ctx, func(tx *sql.Tx) error {
+		var n int
+		if err := tx.QueryRowContext(ctx, s.q(`SELECT COUNT(*) FROM {secret_keys}`)).Scan(&n); err != nil {
+			return err
+		}
 
-	return res.RowsAffected()
+		if n != len(keys) {
+			return Conflict("the secret keys changed meanwhile, try again")
+		}
+
+		for _, k := range keys {
+			res, err := tx.ExecContext(ctx, s.q(`UPDATE {secret_keys} SET wrapped = $2, master = $3 WHERE id = $1 AND master = $4`),
+				k.ID, k.Wrapped, k.Master, k.From)
+			if err != nil {
+				return err
+			}
+
+			if n, err := res.RowsAffected(); err != nil {
+				return err
+			} else if n != 1 {
+				return Conflict("the secret keys changed meanwhile, try again")
+			}
+		}
+
+		return nil
+	})
 }
 
 // Secret is a stored secret; Value is encrypted.
@@ -151,20 +173,6 @@ func (s *Store) PutSecret(ctx context.Context, x *Secret) error {
 		x.Name, x.Description, x.Value, x.KeyID, x.UpdatedAt, x.UpdatedBy)
 
 	return err
-}
-
-// ReencryptSecret replaces a secret's value with one encrypted by another
-// key, if the secret was not changed meanwhile.
-func (s *Store) ReencryptSecret(ctx context.Context, name string, value []byte, keyID string, prevKey string) (bool, error) {
-	res, err := s.db.ExecContext(ctx, s.q(`UPDATE {secrets} SET value = $2, key_id = $3 WHERE name = $1 AND key_id = $4`),
-		name, value, keyID, prevKey)
-	if err != nil {
-		return false, err
-	}
-
-	n, err := res.RowsAffected()
-
-	return n == 1, err
 }
 
 func (s *Store) DeleteSecret(ctx context.Context, name string) error {

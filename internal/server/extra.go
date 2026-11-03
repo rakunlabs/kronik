@@ -18,7 +18,6 @@ import (
 	"github.com/rakunlabs/kronik/internal/schedule"
 	"github.com/rakunlabs/kronik/internal/secrets"
 	"github.com/rakunlabs/kronik/internal/service"
-	"github.com/rakunlabs/kronik/internal/settings"
 	"github.com/rakunlabs/kronik/internal/store"
 )
 
@@ -55,19 +54,15 @@ type secretView struct {
 }
 
 type secretsPage struct {
-	CanStore bool               `json:"can_store"`
-	MasterID string             `json:"master_id"`
-	Problem  string             `json:"problem"`
-	Secrets  []secretView       `json:"secrets"`
-	Keys     []*store.SecretKey `json:"keys"`
-	Rotate   string             `json:"rotate"`
+	secrets.Status
+	Secrets []secretView       `json:"secrets"`
+	Keys    []*store.SecretKey `json:"keys"`
 }
 
 func (s *Server) listSecrets(c *ada.Context) error {
 	ctx := c.Request.Context()
 
-	page := secretsPage{CanStore: s.vault.CanStore(), MasterID: s.vault.MasterID(), Problem: s.vault.Problem(),
-		Secrets: []secretView{}, Keys: []*store.SecretKey{}, Rotate: settings.FormatDuration(s.values().SecretsRotate)}
+	page := secretsPage{Status: s.vault.Status(), Secrets: []secretView{}, Keys: []*store.SecretKey{}}
 
 	values := s.vault.Values()
 	static := s.vault.StaticNames()
@@ -151,11 +146,8 @@ func (s *Server) putSecret(c *ada.Context) error {
 }
 
 func secretErr(err error) error {
-	switch {
-	case errors.Is(err, secrets.ErrInvalid):
+	if errors.Is(err, secrets.ErrInvalid) {
 		return ada.WrapHTTPError(http.StatusBadRequest, err)
-	case errors.Is(err, secrets.ErrNoMaster):
-		return ada.WrapHTTPError(http.StatusConflict, err)
 	}
 
 	return apiErr(err)
@@ -175,18 +167,28 @@ func (s *Server) deleteSecret(c *ada.Context) error {
 	return s.listSecrets(c)
 }
 
-func (s *Server) rotateSecrets(c *ada.Context) error {
+// changeSecretsKey moves the secrets to a new master key. Every replica
+// must get the new key in its configuration before it starts again.
+func (s *Server) changeSecretsKey(c *ada.Context) error {
+	var in struct {
+		Key string `json:"key"`
+	}
+
+	if err := decodeStrict(c, &in); err != nil {
+		return err
+	}
+
 	ctx := c.Request.Context()
 
-	st, err := s.vault.Rotate(ctx)
+	st, err := s.vault.ChangeKey(ctx, in.Key)
 	if err != nil {
 		return secretErr(err)
 	}
 
-	s.svc.AuditSimple(ctx, service.ActionSecretRotate, st)
+	s.svc.AuditSimple(ctx, service.ActionSecretKey, st)
 	s.changedSecrets(ctx)
 
-	return c.SendJSON(st)
+	return s.listSecrets(c)
 }
 
 // Notification channels.

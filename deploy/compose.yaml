@@ -8,8 +8,8 @@ services:
     environment:
       KRONIK_STORE_DSN: postgres://kronik:kronik@postgres:5432/kronik?sslmode=disable
       KRONIK_ENVIRONMENT: sandbox
-      # Encrypts the secrets set from the UI; the same on every replica.
-      # Make your own: openssl rand -base64 32
+      # Encrypts the secrets set from the UI; any text, the same on every
+      # replica. Changed from the UI? Change it here too before a restart.
       KRONIK_SECRETS_KEY: change-me-to-a-long-random-key
       # Kubernetes jobs need a cluster; off here (can be turned on from the UI).
       KRONIK_EXECUTOR_KUBERNETES_ENABLED: "false"

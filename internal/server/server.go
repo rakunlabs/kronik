@@ -160,7 +160,7 @@ func New(cfg *config.Config, d Deps) (*ada.Server, error) {
 	}
 
 	if s.vault == nil {
-		s.vault = secrets.NewVault(nil, nil, cfg.Executor.JS.Secrets)
+		s.vault = secrets.NewVault(nil, secrets.NewMasterKey(cfg.Secrets.Key), cfg.Executor.JS.Secrets)
 	}
 
 	if s.live == nil {
@@ -250,7 +250,7 @@ func (s *Server) routes(api *ada.Mux) {
 	api.GET("/secrets", s.listSecrets)
 	api.PUT("/secrets/{name}", s.putSecret)
 	api.DELETE("/secrets/{name}", s.deleteSecret)
-	api.POST("/secrets/rotate", s.rotateSecrets)
+	api.PUT("/secret-key", s.changeSecretsKey)
 
 	api.GET("/channels", s.listChannels)
 	api.POST("/channels", s.createChannel)

@@ -36,9 +36,6 @@ test('create a job, run it with params and follow the output live', async ({ pag
 })
 
 test('a secret is used by a job and hidden in its output', async ({ page, request }) => {
-  const info = await (await request.get('api/v1/secrets')).json()
-  test.skip(!info.can_store, 'no KRONIK_SECRETS_KEY on the server')
-
   const secret = unique('E2E').replace(/-/g, '_').toUpperCase()
   await page.goto('#/settings/secrets')
   await page.getByRole('button', { name: 'Add a secret' }).click()

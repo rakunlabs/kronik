@@ -78,6 +78,9 @@ type tables struct {
 type Config struct {
 	// DSN is the PostgreSQL connection string.
 	DSN string `cfg:"dsn" log:"-"`
+	// MigrateDSN, when set, is used only to create and change the tables, so
+	// the user of DSN does not need the right to.
+	MigrateDSN string `cfg:"migrate_dsn" log:"-"`
 	// TablePrefix starts every table name, so kronik can share a schema.
 	TablePrefix  string `cfg:"table_prefix" default:"kronik_"`
 	MaxOpenConns int    `cfg:"max_open_conns" default:"10"`
@@ -115,7 +118,7 @@ func New(ctx context.Context, cfg Config) (*Store, error) {
 		},
 	}
 
-	if err := s.migrate(ctx, cfg.TablePrefix); err != nil {
+	if err := migrate(ctx, db, cfg); err != nil {
 		_ = db.Close()
 
 		return nil, fmt.Errorf("migrate; %w", err)
@@ -124,17 +127,35 @@ func New(ctx context.Context, cfg Config) (*Store, error) {
 	return s, nil
 }
 
-func (s *Store) migrate(ctx context.Context, prefix string) error {
+// migrate brings the tables up to date, over a connection of its own when
+// cfg.MigrateDSN is set.
+func migrate(ctx context.Context, db *sql.DB, cfg Config) error {
+	if cfg.MigrateDSN != "" {
+		mdb, err := sql.Open("pgx", cfg.MigrateDSN)
+		if err != nil {
+			return fmt.Errorf("open postgres with the migrate dsn; %w", err)
+		}
+		defer func() { _ = mdb.Close() }()
+
+		mdb.SetMaxOpenConns(2)
+
+		if err := mdb.PingContext(ctx); err != nil {
+			return fmt.Errorf("ping postgres with the migrate dsn; %w", err)
+		}
+
+		db = mdb
+	}
+
 	m := muz.Migrate{
 		Path:      "migrations",
 		FS:        migrationsFS,
 		Extension: ".sql",
-		Values:    map[string]string{"TABLE_PREFIX": prefix},
+		Values:    map[string]string{"TABLE_PREFIX": cfg.TablePrefix},
 	}
 
-	driver := muz.NewPostgresDriver(s.db, prefix+"migrations", slog.Default())
+	driver := muz.NewPostgresDriver(db, cfg.TablePrefix+"migrations", slog.Default())
 	// Replicas starting together migrate one after another.
-	driver.LockKey = "kronik:" + prefix + "migrations"
+	driver.LockKey = "kronik:" + cfg.TablePrefix + "migrations"
 
 	return m.Migrate(ctx, driver)
 }

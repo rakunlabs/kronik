@@ -220,12 +220,13 @@ export type Secret = {
 export type SecretKey = { id: string; master: string; active: boolean; created_at: string; secrets: number }
 
 export type SecretsPage = {
-  can_store: boolean
   master_id: string
+  configured_id: string
+  stored_id: string
   problem: string
+  config_outdated: boolean
   secrets: Secret[]
   keys: SecretKey[]
-  rotate: string
 }
 
 export type RunPoint = { id: string; status: RunStatus; trigger: string; scheduled_at: string; duration_ms: number }
@@ -403,7 +404,7 @@ export const api = {
   secrets: (s?: S) => request<SecretsPage>('GET', '/secrets', undefined, s),
   putSecret: (name: string, v: { description: string; value?: string }) => request<SecretsPage>('PUT', `/secrets/${enc(name)}`, v),
   deleteSecret: (name: string) => request<SecretsPage>('DELETE', `/secrets/${enc(name)}`),
-  rotateSecrets: () => request<{ key: string; reencrypted: number; rewrapped: number; dropped: number }>('POST', '/secrets/rotate', {}),
+  changeSecretsKey: (key: string) => request<SecretsPage>('PUT', '/secret-key', { key }),
 
   channels: (s?: S) => request<Channel[]>('GET', '/channels', undefined, s),
   createChannel: (c: ChannelInput) => request<Channel>('POST', '/channels', c),

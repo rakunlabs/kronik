@@ -2,7 +2,6 @@
   import { KeyRound, Plus, Pencil, Trash2, RefreshCw, ShieldAlert, Lock } from '@lucide/svelte'
   import { api, errorMessage, type Secret, type SecretsPage } from './api'
   import { app } from './app.svelte'
-  import { href } from './router.svelte'
   import { fmtTime, relative } from './format'
   import { clock } from './live.svelte'
   import { toast } from './toast.svelte'
@@ -84,23 +83,38 @@
     }
   }
 
-  let rotating = $state(false)
-  async function rotate() {
+  // Changing the master key: the data keys are wrapped again with the new
+  // one. Each replica's configuration must get it before it starts again.
+  let keyForm = $state<{ key: string; repeat: string } | null>(null)
+  let changing = $state(false)
+  let keyError = $state('')
+
+  async function changeKey(e: SubmitEvent) {
+    e.preventDefault()
+    if (!keyForm) return
+    if (keyForm.key !== keyForm.repeat) {
+      keyError = 'The two keys are not the same'
+      return
+    }
     const ok = await confirm({
-      title: 'Rotate the data key?',
-      body: 'A new data key is made, every secret is encrypted again with it and old keys no secret uses are deleted. Jobs keep working.',
-      action: 'Rotate',
+      title: 'Change the secrets key?',
+      body:
+        'The secrets are encrypted with the new key from now on. Running replicas keep working, but set the new key as ' +
+        'secrets.key (KRONIK_SECRETS_KEY) on every replica before it restarts: with the old key it cannot read the secrets.',
+      action: 'Change the key',
+      danger: true,
     })
     if (!ok) return
-    rotating = true
+    changing = true
+    keyError = ''
     try {
-      const r = await api.rotateSecrets()
-      toast(`New key; ${r.reencrypted} secret${r.reencrypted === 1 ? '' : 's'} encrypted again`)
-      await load()
-    } catch (e) {
-      toast(errorMessage(e), { tone: 'danger' })
+      page = await api.changeSecretsKey(keyForm.key)
+      keyForm = null
+      toast('Key changed. Now set it in the configuration of every replica.')
+    } catch (err) {
+      keyError = errorMessage(err)
     } finally {
-      rotating = false
+      changing = false
     }
   }
 
@@ -124,12 +138,13 @@
         <code>&#123;&#123;secret.NAME&#125;&#125;</code>. Their values are hidden in run output. A value is written once and never shown again.
       </p>
 
-      {#if !page.can_store}
+      {#if page.config_outdated}
         <div class="note flex gap-2">
           <ShieldAlert size={16} class="shrink-0 mt-0.5 text-warn" />
           <span>
-            Secrets cannot be added here: no master key is set. Give every replica the same <code>KRONIK_SECRETS_KEY</code>
-            (<code>openssl rand -base64 32</code>) and restart them. Until then, secrets come only from <code>KRONIK_SECRET_&lt;NAME&gt;</code>.
+            The secrets key was changed from here: the secrets are encrypted with key <code>{page.stored_id}</code>, but this
+            replica's configuration has <code>{page.configured_id}</code>. Set the new key as <code>secrets.key</code>
+            (<code>KRONIK_SECRETS_KEY</code>) on every replica <b>before it restarts</b>, or it cannot read the secrets.
           </span>
         </div>
       {/if}
@@ -137,7 +152,7 @@
 
       <div class="flex items-center justify-between gap-2">
         <h2>Secrets</h2>
-        <button class="primary" disabled={!page.can_store} onclick={add}><Plus size={14} /> Add a secret</button>
+        <button class="primary" onclick={add}><Plus size={14} /> Add a secret</button>
       </div>
 
       {#if editing}
@@ -216,7 +231,7 @@
                 <td class="shrink">
                   {#if s.source === 'ui'}
                     <div class="flex justify-end gap-1">
-                      <button class="ghost sm" disabled={!page.can_store} onclick={() => edit(s)} aria-label="Edit {s.name}"><Pencil size={12} /> Edit</button>
+                      <button class="ghost sm" onclick={() => edit(s)} aria-label="Edit {s.name}"><Pencil size={12} /> Edit</button>
                       <button class="ghost sm danger" onclick={() => remove(s)} aria-label="Delete {s.name}"><Trash2 size={12} /></button>
                     </div>
                   {/if}
@@ -233,33 +248,32 @@
     <section class="panel grid gap-3 p-4">
       <div class="flex items-center justify-between gap-2">
         <h2>Encryption</h2>
-        <button class="sm" disabled={!page.can_store || rotating} onclick={rotate}><RefreshCw size={12} /> {rotating ? 'Rotating…' : 'Rotate now'}</button>
+        {#if !keyForm}
+          <button class="sm" onclick={() => ((keyForm = { key: '', repeat: '' }), (keyError = ''))}><RefreshCw size={12} /> Change the key</button>
+        {/if}
       </div>
       <p class="small muted">
-        Each value is sealed with AES-256-GCM under a data key; data keys are sealed under the master key from
-        <code>KRONIK_SECRETS_KEY</code>, which is never stored.
+        Each value is sealed with AES-256-GCM under a data key; data keys are sealed under the master key, the SHA-256 of
+        <code>secrets.key</code> (<code>KRONIK_SECRETS_KEY</code>), which is never stored.
       </p>
       <dl class="kv">
-        <dt>Master key</dt>
-        <dd>{#if page.master_id}<code>{page.master_id}</code>{:else}<span class="text-warn">not set</span>{/if}</dd>
+        <dt>Key in use</dt>
+        <dd><code>{page.stored_id || page.master_id}</code></dd>
+        <dt>In the configuration</dt>
+        <dd><code class={page.config_outdated ? 'text-warn' : ''}>{page.configured_id}</code>{#if page.config_outdated} <span class="text-warn small">outdated</span>{/if}</dd>
         <dt>Data key</dt>
         <dd>
           {#if active}<code>{active.id.slice(-8)}</code> <span class="faint">· {relative(active.created_at, clock.now)}</span>{:else}<span class="faint">none yet</span>{/if}
         </dd>
-        <dt>Rotation</dt>
-        <dd>
-          {#if page.rotate && page.rotate !== '0'}every {page.rotate}{:else}by hand only{/if}
-          <a class="small ml-1" href={href('settings', 'configuration', { group: 'secrets' })}>change</a>
-        </dd>
       </dl>
-      {#if page.keys.length}
+      {#if page.keys.length > 1}
         <table class="text-[12px]">
           <thead><tr><th>Data key</th><th>Master</th><th>Made</th><th class="text-right!">Secrets</th></tr></thead>
           <tbody>
             {#each page.keys as k (k.id)}
               <tr>
                 <td class="mono">{k.id.slice(-8)}{#if k.active}<span class="badge ok ml-1">active</span>{/if}</td>
-                <td class="mono {k.master !== page.master_id ? 'text-warn' : ''}" title={k.master !== page.master_id ? 'An older master key: rotate to move it' : ''}>{k.master}</td>
+                <td class="mono">{k.master}</td>
                 <td title={fmtTime(k.created_at)}>{relative(k.created_at, clock.now)}</td>
                 <td class="text-right">{k.secrets}</td>
               </tr>
@@ -267,10 +281,35 @@
           </tbody>
         </table>
       {/if}
-      <p class="hint">
-        To change the master key: set the new one as <code>KRONIK_SECRETS_KEY</code> and the old one as <code>KRONIK_SECRETS_OLD_KEYS</code> on every
-        replica, restart, press Rotate now, then remove the old key.
-      </p>
+      {#if keyForm}
+        <form class="grid gap-3" onsubmit={changeKey}>
+          <label>
+            New key
+            <input type="password" class="mono" bind:value={keyForm.key} autocomplete="new-password" spellcheck="false" />
+            <span class="hint">Any text, even empty; a long random one is best (<code>openssl rand -base64 32</code>).</span>
+          </label>
+          <label>
+            Again
+            <input type="password" class="mono" bind:value={keyForm.repeat} autocomplete="new-password" spellcheck="false" />
+          </label>
+          <div class="note flex gap-2 text-[12.5px]">
+            <ShieldAlert size={14} class="shrink-0 mt-0.5 text-warn" />
+            <span>
+              Set the same key as <code>secrets.key</code> (<code>KRONIK_SECRETS_KEY</code>) in the configuration of every replica too.
+              A replica that starts with the old key cannot read the secrets.
+            </span>
+          </div>
+          {#if keyError}<div class="alert">{keyError}</div>{/if}
+          <div class="flex gap-2">
+            <button class="primary" type="submit" disabled={changing}>{changing ? 'Changing…' : 'Change the key'}</button>
+            <button type="button" onclick={() => (keyForm = null)}>Cancel</button>
+          </div>
+        </form>
+      {:else}
+        <p class="hint">
+          To change the key: change it here, then set the same one as <code>KRONIK_SECRETS_KEY</code> on every replica before it restarts.
+        </p>
+      {/if}
     </section>
   </div>
 {/if}

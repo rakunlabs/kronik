@@ -18,6 +18,14 @@ import (
 	"github.com/rakunlabs/logi"
 	"github.com/rakunlabs/tell"
 
+	_ "github.com/rakunlabs/chu/loader/external/loaderawssecrets"
+	_ "github.com/rakunlabs/chu/loader/external/loaderawsssm"
+	_ "github.com/rakunlabs/chu/loader/external/loaderazurekeyvault"
+	_ "github.com/rakunlabs/chu/loader/external/loaderconsul"
+	_ "github.com/rakunlabs/chu/loader/external/loadergcpparameter"
+	_ "github.com/rakunlabs/chu/loader/external/loadergcpsecret"
+	_ "github.com/rakunlabs/chu/loader/external/loadervault"
+
 	"github.com/rakunlabs/kronik/internal/store"
 )
 
@@ -168,18 +176,12 @@ type Kubernetes struct {
 }
 
 // Secrets: values set from the UI are encrypted with a data key, and data
-// keys with the master key here. Every replica needs the same master key.
+// keys with the master key made from Key. Every replica needs the same Key.
 type Secrets struct {
-	// Key is the master key: 32 bytes as base64 or hex (openssl rand
-	// -base64 32), or a passphrase of 16 characters or more. Without it,
-	// secrets can only come from KRONIK_SECRET_<NAME>.
+	// Key is any secret, even empty: its SHA-256 is the master key. When it
+	// is changed from the UI (Settings → Secrets), set the new one here too
+	// before the next start, or the secrets cannot be read.
 	Key string `cfg:"key" log:"-"`
-	// OldKeys still open what an earlier master key wrapped, while the
-	// change to the new key goes on (Settings → Secrets → Rotate).
-	OldKeys []string `cfg:"old_keys" log:"-"`
-	// Rotate makes a new data key and re-encrypts every secret with it once
-	// the active one is this old; 0 rotates only by hand.
-	Rotate time.Duration `cfg:"rotate" default:"2160h"`
 }
 
 type Notify struct {
@@ -335,10 +337,6 @@ func (c *Config) validate() error {
 		return fmt.Errorf("scheduler.node_timeout must be at least %s", 3*heartbeatFloor)
 	case s.RunRetention < 0 || s.RunsPerJob < 0 || s.AuditRetention < 0:
 		return errors.New("scheduler.run_retention, runs_per_job and audit_retention must not be negative")
-	}
-
-	if c.Secrets.Rotate < 0 {
-		return errors.New("secrets.rotate must not be negative")
 	}
 
 	if js := c.Executor.JS; js.Enabled && (js.MaxDuration <= 0 || js.MaxResponse <= 0 || js.MaxRequests < 0) {

@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"runtime"
@@ -147,7 +146,7 @@ func run(ctx context.Context) error {
 	go set.Run(ctx)
 	go sender.Run(ctx)
 	go mets.Watch(ctx, st, 15*time.Second)
-	go secretsLoop(ctx, st, vault, set)
+	go secretsLoop(ctx, vault)
 
 	// Whichever stops first stops the other; the scheduler is waited for so
 	// running jobs can finish.
@@ -176,36 +175,16 @@ func run(ctx context.Context) error {
 	return nil
 }
 
-// newVault reads the master keys and the stored secrets.
+// newVault reads the stored secrets with the master key from the
+// configuration.
 func newVault(ctx context.Context, cfg *config.Config, st *store.Store) (*secrets.Vault, error) {
-	var masters []secrets.MasterKey
-
-	for i, k := range append([]string{cfg.Secrets.Key}, cfg.Secrets.OldKeys...) {
-		if k == "" {
-			continue
-		}
-
-		m, err := secrets.ParseMasterKey(k)
-		if err != nil {
-			if i == 0 {
-				return nil, fmt.Errorf("secrets.key: %w", err)
-			}
-
-			return nil, fmt.Errorf("secrets.old_keys[%d]: %w", i-1, err)
-		}
-
-		masters = append(masters, m)
-	}
-
-	if len(masters) == 0 {
-		slog.Warn("no secrets master key (KRONIK_SECRETS_KEY): secrets cannot be set from the UI, only with KRONIK_SECRET_<NAME>")
-	} else if cfg.Secrets.Key == "" {
-		return nil, errors.New("secrets.old_keys is set but secrets.key is not")
-	}
-
-	v := secrets.NewVault(st, masters, cfg.Executor.JS.Secrets)
+	v := secrets.NewVault(st, secrets.NewMasterKey(cfg.Secrets.Key), cfg.Executor.JS.Secrets)
 	if _, err := v.Load(ctx); err != nil {
 		return nil, fmt.Errorf("load secrets; %w", err)
+	}
+
+	if cfg.Secrets.Key == "" {
+		slog.Warn("secrets.key (KRONIK_SECRETS_KEY) is empty: the secrets set from the UI are encrypted with the key of an empty secret; set one, or change it from Settings → Secrets")
 	}
 
 	if p := v.Problem(); p != "" {
@@ -221,9 +200,8 @@ func loadSecrets(ctx context.Context, v *secrets.Vault) {
 	}
 }
 
-// secretsLoop reloads the secrets now and then, and rotates the data key
-// once it is older than the setting says, on one replica a day.
-func secretsLoop(ctx context.Context, st *store.Store, v *secrets.Vault, set *settings.Manager) {
+// secretsLoop reloads the secrets now and then.
+func secretsLoop(ctx context.Context, v *secrets.Vault) {
 	t := time.NewTicker(30 * time.Second)
 	defer t.Stop()
 
@@ -235,29 +213,6 @@ func secretsLoop(ctx context.Context, st *store.Store, v *secrets.Vault, set *se
 		}
 
 		loadSecrets(ctx, v)
-
-		every := set.Values().SecretsRotate
-		if every <= 0 || !v.CanStore() {
-			continue
-		}
-
-		age, err := v.KeyAge(ctx)
-		if err != nil || age < every {
-			continue
-		}
-
-		if ok, err := st.ClaimDaily(ctx, "rotate-secrets", time.Now().UTC().Format("2006-01-02")); err != nil || !ok {
-			continue
-		}
-
-		stats, err := v.Rotate(ctx)
-		if err != nil {
-			slog.Error("rotate the secrets data key", "error", err)
-
-			continue
-		}
-
-		slog.Info("secrets data key rotated", "key", stats.Key, "reencrypted", stats.Reencrypted, "dropped", stats.Dropped)
 	}
 }
 

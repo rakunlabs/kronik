@@ -78,8 +78,8 @@ func TestAPIFeatures(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	key, _ := secrets.ParseMasterKey("a test master key here")
-	vault := secrets.NewVault(st, []secrets.MasterKey{key}, cfg.Executor.JS.Secrets)
+	key := secrets.NewMasterKey("a test master key here")
+	vault := secrets.NewVault(st, key, cfg.Executor.JS.Secrets)
 
 	n := startNode(t, st, "n1")
 	n.sch.SetSecrets(vault.Values)
@@ -237,13 +237,14 @@ func TestAPIFeatures(t *testing.T) {
 		t.Fatalf("history: %v", hist)
 	}
 
-	// Rotation keeps the secret readable.
-	if code, rot := a.do(http.MethodPost, "/api/v1/secrets/rotate", ""); code != 200 || rot["reencrypted"].(float64) != 1 {
-		t.Fatalf("rotate: %d %v", code, rot)
+	// Changing the key keeps the secret readable and says the configuration
+	// must follow.
+	if code, out := a.do(http.MethodPut, "/api/v1/secret-key", `{"key":"a new key"}`); code != 200 || out["configured_id"] == out["master_id"] {
+		t.Fatalf("change key: %d %v", code, out)
 	}
 
 	if vault.Values()["DB_PASS"] != "hunter22" {
-		t.Fatal("secret lost in rotation")
+		t.Fatal("secret lost in the key change")
 	}
 
 	// Channels.

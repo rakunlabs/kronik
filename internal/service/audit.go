@@ -44,7 +44,7 @@ const (
 	ActionSecretCreate = "secret.create"
 	ActionSecretUpdate = "secret.update"
 	ActionSecretDelete = "secret.delete"
-	ActionSecretRotate = "secret.rotate"
+	ActionSecretKey    = "secret.key"
 
 	ActionChannelCreate = "channel.create"
 	ActionChannelUpdate = "channel.update"

@@ -2,9 +2,9 @@
 // PostgreSQL.
 //
 // Envelope encryption: every value is sealed with AES-256-GCM under a data
-// key; data keys are sealed under a master key that comes from the
-// environment and is never stored. Rotating makes a new data key and
-// re-encrypts the secrets under it; a new master key re-wraps the data keys.
+// key; data keys are sealed under a master key made from the configured
+// secret and never stored. Changing the master key (from the UI) re-wraps
+// the data keys; the values stay as they are.
 package secrets
 
 import (
@@ -13,7 +13,6 @@ import (
 	"crypto/cipher"
 	"crypto/rand"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -23,12 +22,12 @@ import (
 	"slices"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/rakunlabs/kronik/internal/store"
 )
 
-// MasterKey is a key from the environment that wraps the data keys.
+// MasterKey wraps the data keys. It is made from any secret, even an empty
+// one: the secret's SHA-256 is the key.
 type MasterKey struct {
 	// ID names the key: the first bytes of its hash, so the key it was
 	// wrapped with can be told without storing it.
@@ -36,30 +35,12 @@ type MasterKey struct {
 	key []byte
 }
 
-// ParseMasterKey reads a 32-byte key given as base64 or hex, or derives one
-// from a passphrase of at least 16 characters.
-func ParseMasterKey(s string) (MasterKey, error) {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return MasterKey{}, errors.New("empty")
-	}
+// NewMasterKey makes the master key of a secret.
+func NewMasterKey(secret string) MasterKey {
+	key := sha256.Sum256([]byte(secret))
+	id := sha256.Sum256(append([]byte("kronik-key-id:"), key[:]...))
 
-	var key []byte
-
-	if b, err := base64.StdEncoding.DecodeString(s); err == nil && len(b) == 32 {
-		key = b
-	} else if b, err := hex.DecodeString(s); err == nil && len(b) == 32 {
-		key = b
-	} else if len(s) >= 16 {
-		sum := sha256.Sum256([]byte("kronik-master-key:" + s))
-		key = sum[:]
-	} else {
-		return MasterKey{}, errors.New("give 32 bytes as base64 or hex (openssl rand -base64 32), or a passphrase of 16 characters or more")
-	}
-
-	id := sha256.Sum256(append([]byte("kronik-key-id:"), key...))
-
-	return MasterKey{ID: hex.EncodeToString(id[:4]), key: key}, nil
+	return MasterKey{ID: hex.EncodeToString(id[:4]), key: key[:]}
 }
 
 func seal(key, plain []byte) ([]byte, error) {
@@ -103,12 +84,10 @@ func open(key, sealed []byte) ([]byte, error) {
 type Store interface {
 	SecretKeys(ctx context.Context) ([]*store.SecretKey, error)
 	AddSecretKey(ctx context.Context, k *store.SecretKey) error
-	RewrapSecretKey(ctx context.Context, id string, wrapped []byte, master string) error
-	DropUnusedSecretKeys(ctx context.Context, before time.Time) (int64, error)
+	RewrapSecretKeys(ctx context.Context, keys []store.Rewrap) error
 	ListSecrets(ctx context.Context) ([]*store.Secret, error)
 	GetSecret(ctx context.Context, name string) (*store.Secret, error)
 	PutSecret(ctx context.Context, x *store.Secret) error
-	ReencryptSecret(ctx context.Context, name string, value []byte, keyID, prevKey string) (bool, error)
 	DeleteSecret(ctx context.Context, name string) error
 	SecretsVersion(ctx context.Context) (string, error)
 }
@@ -116,36 +95,53 @@ type Store interface {
 // Vault holds the secrets for the executors: the ones from the replica's
 // configuration and the ones from the database, decrypted in memory.
 type Vault struct {
-	st      Store
-	masters []MasterKey // the first wraps new keys; the rest only open old ones
-	static  map[string]string
+	st Store
+	// configured is the master key from the configuration; the next start
+	// uses it, whatever was changed from the UI meanwhile.
+	configured string
+	static     map[string]string
 
-	mu      sync.RWMutex
-	values  map[string]string
-	version string
-	problem string
+	mu     sync.RWMutex
+	master MasterKey
+	// dataKeys are the data keys opened so far. A data key never changes,
+	// so a replica keeps reading the secrets after another replica changed
+	// the master key, until it restarts.
+	dataKeys map[string][]byte
+	values   map[string]string
+	version  string
+	problem  string
+	stored   string // master key id the stored data keys are wrapped with
 }
-
-// ErrNoMaster is a change refused because no master key is set.
-var ErrNoMaster = errors.New("secrets cannot be stored: set KRONIK_SECRETS_KEY (openssl rand -base64 32) on every replica")
 
 // NewVault makes a vault. static are the secrets from the configuration;
-// a stored secret of the same name wins. masters may be empty: then only
-// static secrets are there.
-func NewVault(st Store, masters []MasterKey, static map[string]string) *Vault {
-	return &Vault{st: st, masters: masters, static: maps.Clone(static), values: maps.Clone(static)}
+// a stored secret of the same name wins.
+func NewVault(st Store, master MasterKey, static map[string]string) *Vault {
+	return &Vault{st: st, configured: master.ID, master: master, static: maps.Clone(static),
+		dataKeys: map[string][]byte{}, values: maps.Clone(static)}
 }
 
-// CanStore reports whether a master key is set.
-func (v *Vault) CanStore() bool { return len(v.masters) > 0 }
+// Status is the state of the master key on this replica.
+type Status struct {
+	// MasterID is the key this replica wraps new data keys with.
+	MasterID string `json:"master_id"`
+	// ConfiguredID is the key from this replica's configuration.
+	ConfiguredID string `json:"configured_id"`
+	// StoredID is the key the stored data keys are wrapped with, "" without
+	// data keys.
+	StoredID string `json:"stored_id"`
+	// Problem is why stored secrets could not be read, "" when they could.
+	Problem string `json:"problem"`
+	// ConfigOutdated is set when the configured key is not the one the
+	// stored data keys are wrapped with: the next start cannot read them.
+	ConfigOutdated bool `json:"config_outdated"`
+}
 
-// MasterID is the id of the master key that wraps new data keys.
-func (v *Vault) MasterID() string {
-	if len(v.masters) == 0 {
-		return ""
-	}
+func (v *Vault) Status() Status {
+	v.mu.RLock()
+	defer v.mu.RUnlock()
 
-	return v.masters[0].ID
+	return Status{MasterID: v.master.ID, ConfiguredID: v.configured, StoredID: v.stored, Problem: v.problem,
+		ConfigOutdated: v.stored != "" && v.stored != v.configured}
 }
 
 // Values are the secrets in effect: name → value.
@@ -185,7 +181,7 @@ func (v *Vault) Load(ctx context.Context) (bool, error) {
 		return false, nil
 	}
 
-	keys, err := v.dataKeys(ctx)
+	ks, err := v.st.SecretKeys(ctx)
 	if err != nil {
 		return false, err
 	}
@@ -198,6 +194,19 @@ func (v *Vault) Load(ctx context.Context) (bool, error) {
 	values := maps.Clone(v.static)
 	if values == nil {
 		values = map[string]string{}
+	}
+
+	keys := map[string][]byte{}
+	storedID := ""
+
+	for _, k := range ks {
+		if key, ok := v.dataKey(k); ok {
+			keys[k.ID] = key
+		}
+
+		if k.Active {
+			storedID = k.Master
+		}
 	}
 
 	var problems []string
@@ -222,49 +231,44 @@ func (v *Vault) Load(ctx context.Context) (bool, error) {
 
 	problem := ""
 	if len(problems) > 0 {
-		problem = fmt.Sprintf("cannot decrypt %s: the master key (KRONIK_SECRETS_KEY) of this replica is not the one they were stored with",
-			strings.Join(problems, ", "))
+		problem = fmt.Sprintf("cannot decrypt %s: they are encrypted with key %s, the key of this replica (secrets.key) is %s",
+			strings.Join(problems, ", "), storedID, v.Status().MasterID)
 		slog.Error("secrets not readable", "secrets", problems)
 	}
 
 	v.mu.Lock()
-	v.values, v.version, v.problem = values, ver, problem
+	v.values, v.version, v.problem, v.stored = values, ver, problem, storedID
 	v.mu.Unlock()
 
 	return true, nil
 }
 
-// dataKeys opens every data key this replica's master keys can open.
-func (v *Vault) dataKeys(ctx context.Context) (map[string][]byte, error) {
-	ks, err := v.st.SecretKeys(ctx)
+// dataKey opens a stored data key, or takes it from the ones opened before.
+func (v *Vault) dataKey(k *store.SecretKey) ([]byte, bool) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+
+	if key, ok := v.dataKeys[k.ID]; ok {
+		return key, true
+	}
+
+	if k.Master != v.master.ID {
+		return nil, false
+	}
+
+	key, err := open(v.master.key, k.Wrapped)
 	if err != nil {
-		return nil, err
+		return nil, false
 	}
 
-	out := map[string][]byte{}
+	v.dataKeys[k.ID] = key
 
-	for _, k := range ks {
-		for _, m := range v.masters {
-			if m.ID != k.Master {
-				continue
-			}
-
-			if key, err := open(m.key, k.Wrapped); err == nil {
-				out[k.ID] = key
-			}
-		}
-	}
-
-	return out, nil
+	return key, true
 }
 
 // activeKey returns the data key new values are sealed with, making one if
-// there is none (or the active one is not readable here).
+// there is none.
 func (v *Vault) activeKey(ctx context.Context) (string, []byte, error) {
-	if !v.CanStore() {
-		return "", nil, ErrNoMaster
-	}
-
 	ks, err := v.st.SecretKeys(ctx)
 	if err != nil {
 		return "", nil, err
@@ -275,15 +279,11 @@ func (v *Vault) activeKey(ctx context.Context) (string, []byte, error) {
 			continue
 		}
 
-		for _, m := range v.masters {
-			if m.ID == k.Master {
-				if key, err := open(m.key, k.Wrapped); err == nil {
-					return k.ID, key, nil
-				}
-			}
+		if key, ok := v.dataKey(k); ok {
+			return k.ID, key, nil
 		}
 
-		return "", nil, fmt.Errorf("the active data key is wrapped by master key %s, which this replica does not have", k.Master)
+		return "", nil, fmt.Errorf("the secrets are encrypted with key %s, which this replica does not have: set it as secrets.key", k.Master)
 	}
 
 	return v.newKey(ctx)
@@ -295,15 +295,23 @@ func (v *Vault) newKey(ctx context.Context) (string, []byte, error) {
 		return "", nil, err
 	}
 
-	wrapped, err := seal(v.masters[0].key, key)
+	v.mu.RLock()
+	master := v.master
+	v.mu.RUnlock()
+
+	wrapped, err := seal(master.key, key)
 	if err != nil {
 		return "", nil, err
 	}
 
-	k := &store.SecretKey{ID: store.NewID(), Wrapped: wrapped, Master: v.masters[0].ID, CreatedAt: store.Now()}
+	k := &store.SecretKey{ID: store.NewID(), Wrapped: wrapped, Master: master.ID, CreatedAt: store.Now()}
 	if err := v.st.AddSecretKey(ctx, k); err != nil {
 		return "", nil, err
 	}
+
+	v.mu.Lock()
+	v.dataKeys[k.ID] = key
+	v.mu.Unlock()
 
 	return k.ID, key, nil
 }
@@ -366,110 +374,76 @@ func (v *Vault) Delete(ctx context.Context, name string) error {
 // ErrInvalid marks an input error.
 var ErrInvalid = errors.New("invalid")
 
-// RotateStats is what a rotation did.
-type RotateStats struct {
-	Key         string `json:"key"`
-	Reencrypted int    `json:"reencrypted"`
-	Rewrapped   int    `json:"rewrapped"`
-	Dropped     int64  `json:"dropped"`
+// ChangeStats is what a key change did.
+type ChangeStats struct {
+	From      string `json:"from"`
+	To        string `json:"to"`
+	Rewrapped int    `json:"rewrapped"`
 }
 
-// Rotate makes a new data key, re-encrypts every secret with it, re-wraps
-// the data keys still around under the current master key and drops the
-// old keys no secret uses anymore.
-func (v *Vault) Rotate(ctx context.Context) (RotateStats, error) {
-	var st RotateStats
+// ChangeKey moves the data keys to the master key made from secret. The
+// values are not touched: other replicas keep reading them with the data
+// keys they opened, but each needs the new secret in its configuration
+// before it starts again.
+func (v *Vault) ChangeKey(ctx context.Context, secret string) (ChangeStats, error) {
+	v.mu.RLock()
+	from := v.master
+	v.mu.RUnlock()
 
-	if !v.CanStore() {
-		return st, ErrNoMaster
-	}
+	to := NewMasterKey(secret)
+	st := ChangeStats{From: from.ID, To: to.ID}
 
-	keys, err := v.dataKeys(ctx)
-	if err != nil {
-		return st, err
-	}
-
-	id, key, err := v.newKey(ctx)
-	if err != nil {
-		return st, err
-	}
-
-	st.Key = id
-
-	stored, err := v.st.ListSecrets(ctx)
-	if err != nil {
-		return st, err
-	}
-
-	for _, x := range stored {
-		old, ok := keys[x.KeyID]
-		if !ok {
-			return st, fmt.Errorf("cannot decrypt secret %s: its key is wrapped by a master key this replica does not have", x.Name)
-		}
-
-		plain, err := open(old, x.Value)
-		if err != nil {
-			return st, fmt.Errorf("cannot decrypt secret %s: %w", x.Name, err)
-		}
-
-		sealed, err := seal(key, plain)
-		if err != nil {
-			return st, err
-		}
-
-		if ok, err := v.st.ReencryptSecret(ctx, x.Name, sealed, id, x.KeyID); err != nil {
-			return st, err
-		} else if ok {
-			st.Reencrypted++
-		}
-	}
-
-	// Keys left (in use by a secret changed meanwhile) move to the current
-	// master key, so an old master key can be taken away.
 	ks, err := v.st.SecretKeys(ctx)
 	if err != nil {
 		return st, err
 	}
 
 	for _, k := range ks {
-		plain, ok := keys[k.ID]
-		if !ok || k.Master == v.masters[0].ID {
-			continue
+		if k.Active {
+			st.From = k.Master
+		}
+	}
+
+	if st.From == to.ID {
+		return st, fmt.Errorf("%w: the new key is the same as the one in use", ErrInvalid)
+	}
+
+	rewrapped := make([]store.Rewrap, 0, len(ks))
+
+	for _, k := range ks {
+		plain, ok := v.dataKey(k)
+		if !ok {
+			return st, fmt.Errorf("the secrets are encrypted with key %s, not with the key of this replica (%s)", k.Master, from.ID)
 		}
 
-		wrapped, err := seal(v.masters[0].key, plain)
+		wrapped, err := seal(to.key, plain)
 		if err != nil {
 			return st, err
 		}
 
-		if err := v.st.RewrapSecretKey(ctx, k.ID, wrapped, v.masters[0].ID); err != nil {
-			return st, err
-		}
-
-		st.Rewrapped++
+		rewrapped = append(rewrapped, store.Rewrap{ID: k.ID, Wrapped: wrapped, Master: to.ID, From: k.Master})
 	}
 
-	if st.Dropped, err = v.st.DropUnusedSecretKeys(ctx, store.Now()); err != nil {
+	if err := v.st.RewrapSecretKeys(ctx, rewrapped); err != nil {
 		return st, err
+	}
+
+	st.Rewrapped = len(rewrapped)
+
+	v.mu.Lock()
+	v.master = to
+	v.version = "" // read again: the key in use changed
+	v.mu.Unlock()
+
+	// Without a data key nothing tells the other replicas which key is in
+	// use: make one now, under the new key.
+	if len(ks) == 0 {
+		if _, _, err := v.newKey(ctx); err != nil {
+			return st, err
+		}
 	}
 
 	_, err = v.Load(ctx)
 
 	return st, err
-}
-
-// KeyAge is how old the active data key is, zero without one.
-func (v *Vault) KeyAge(ctx context.Context) (time.Duration, error) {
-	ks, err := v.st.SecretKeys(ctx)
-	if err != nil {
-		return 0, err
-	}
-
-	for _, k := range ks {
-		if k.Active {
-			return time.Since(k.CreatedAt), nil
-		}
-	}
-
-	return 0, nil
 }

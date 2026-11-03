@@ -63,8 +63,6 @@ type Values struct {
 	SMTPPasswordSecret    string
 	SMTPFrom              string
 
-	SecretsRotate time.Duration
-
 	MetricsEnabled bool
 	MetricsPerJob  bool
 }
@@ -129,8 +127,6 @@ func (v *Values) fields() map[string]any {
 		"notify.smtp_user":            &v.SMTPUser,
 		"notify.smtp_password_secret": &v.SMTPPasswordSecret,
 		"notify.smtp_from":            &v.SMTPFrom,
-
-		"secrets.rotate": &v.SecretsRotate,
 
 		"metrics.enabled": &v.MetricsEnabled,
 		"metrics.per_job": &v.MetricsPerJob,
