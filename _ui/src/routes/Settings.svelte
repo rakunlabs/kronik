@@ -9,11 +9,15 @@
   import AuditTable from '../lib/AuditTable.svelte'
   import McpSetup from '../lib/McpSetup.svelte'
   import SettingsForm from '../lib/SettingsForm.svelte'
+  import SecretsManager from '../lib/SecretsManager.svelte'
+  import ChannelsManager from '../lib/ChannelsManager.svelte'
 
   let { tab = '' }: { tab?: string } = $props()
 
   const tabs = [
     { id: 'configuration', label: 'Configuration' },
+    { id: 'secrets', label: 'Secrets' },
+    { id: 'notifications', label: 'Notifications' },
     { id: 'replicas', label: 'Replicas' },
     { id: 'audit', label: 'Audit log' },
     { id: 'mcp', label: 'MCP' },
@@ -78,6 +82,10 @@
 
 {#if current === 'configuration'}
   <SettingsForm />
+{:else if current === 'secrets'}
+  <SecretsManager />
+{:else if current === 'notifications'}
+  <ChannelsManager />
 {:else if current === 'replicas'}
   <p class="muted text-[13px] mb-4 max-w-[70ch]">
     Every replica schedules and runs jobs from the same PostgreSQL database; each run is taken by one of them. A replica not seen for
@@ -150,7 +158,7 @@
       <div>
         <span class="text-[12px] font-medium muted">Tools</span>
         <p class="small faint mt-1">
-          list_jobs, get_job, list_runs, get_run, schedule_preview, audit_log{#if !info?.mcp.read_only}, create_job, update_job, pause_job,
+          list_jobs, get_job, list_runs, get_run, list_channels, schedule_preview, audit_log{#if !info?.mcp.read_only}, create_job, update_job, pause_job,
             resume_job, trigger_job, cancel_run, delete_job, test_job{/if} (each prefixed <code>kronik_</code>).
         </p>
       </div>

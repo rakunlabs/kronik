@@ -11,6 +11,8 @@
     type JSConfig,
     type ContainerConfig,
     type TestRun,
+    type Channel,
+    type NotifyEvent,
   } from '../lib/api'
   import { app } from '../lib/app.svelte'
   import { router, href, open, setGuard } from '../lib/router.svelte'
@@ -18,7 +20,6 @@
   import PageHeader from '../lib/PageHeader.svelte'
   import SchedulePreview from '../lib/SchedulePreview.svelte'
   import KeyValues from '../lib/KeyValues.svelte'
-  import ScriptEditor from '../lib/ScriptEditor.svelte'
   import TestResult from '../lib/TestResult.svelte'
   import ContainerForm from '../lib/ContainerForm.svelte'
 
@@ -97,6 +98,11 @@ return { stars: repo.stargazers_count }
     timeout_seconds: 0,
     retries: 0,
     retry_delay_seconds: 10,
+    jitter_seconds: 0,
+    alert_after_seconds: 0,
+    notify: { channels: [], on: [] },
+    after_jobs: [],
+    after_on: 'succeeded',
   })
   // Both configs are kept, so switching the executor back loses nothing.
   let http = $state<HTTPConfig>(blankHTTP())
@@ -116,11 +122,24 @@ return { stars: repo.stargazers_count }
   let version = ''
 
   function fill(j: Job, copy: boolean) {
-    const { id: _id, next_run_at: _n, created_at: _c, updated_at, last_run: _l, ...rest } = j
+    const {
+      id: _id,
+      next_run_at: _n,
+      created_at: _c,
+      updated_at,
+      last_run: _l,
+      created_by: _cb,
+      updated_by: _ub,
+      alerted_at: _a,
+      health: _h,
+      has_hook: _hh,
+      ...rest
+    } = j
     // A copy starts paused, so it does not run beside the original at once.
     form = copy ? { ...rest, name: `${j.name}-copy`, enabled: false } : rest
     version = copy ? '' : updated_at
     tagsText = j.tags.join(', ')
+    alertMinutes = j.alert_after_seconds ? Math.round(j.alert_after_seconds / 60) : null
     if (j.executor === 'http') {
       http = { ...blankHTTP(), ...j.config }
       statusText = (http.expected_status ?? []).join(', ')
@@ -133,9 +152,12 @@ return { stars: repo.stargazers_count }
     }
   }
 
+  // The "did not run" alert is set in minutes.
+  let alertMinutes = $state<number | null>(null)
+
   // saved is the form as it was loaded; leaving with changes asks first.
   let saved = $state('')
-  const snapshot = () => JSON.stringify([form, http, command, js, ctr, tagsText, statusText])
+  const snapshot = () => JSON.stringify([form, http, command, js, ctr, tagsText, statusText, alertMinutes])
   const dirty = $derived(loaded && !saving && saved !== '' && snapshot() !== saved)
 
   function ready() {
@@ -253,6 +275,8 @@ return { stars: repo.stargazers_count }
       timeout_seconds: num(form.timeout_seconds, 0),
       retries: num(form.retries, 0),
       retry_delay_seconds: num(form.retry_delay_seconds, 10),
+      jitter_seconds: num(form.jitter_seconds, 0),
+      alert_after_seconds: alertMinutes ? Math.round(num(alertMinutes, 0) * 60) : 0,
       config,
     } as JobInput
   }
@@ -315,6 +339,28 @@ return { stars: repo.stargazers_count }
   $effect(() => () => testCtl?.abort())
 
   const secretNames = $derived(app.info?.secrets ?? [])
+
+  // The script editor (CodeMirror) is large: it is loaded only for a js job.
+  const ScriptEditor = $derived(form.executor === 'js' ? import('../lib/ScriptEditor.svelte').then((m) => m.default) : null)
+
+  // Other jobs, for "run after", and the notification channels.
+  let others = $state<{ id: string; name: string }[]>([])
+  let channels = $state<Channel[]>([])
+  api.jobs().then((js) => (others = js.filter((j) => j.id !== id).map((j) => ({ id: j.id, name: j.name })))).catch(() => {})
+  api.channels().then((c) => (channels = c)).catch(() => {})
+
+  const events: { id: NotifyEvent; label: string; hint: string }[] = [
+    { id: 'failure', label: 'Fails', hint: 'when it starts failing, once' },
+    { id: 'recovery', label: 'Recovers', hint: 'the first success after failing' },
+    { id: 'no_run', label: 'Did not run', hint: 'no success within the alert time' },
+    { id: 'success', label: 'Every success', hint: 'can be noisy' },
+  ]
+
+  function toggleIn<T>(list: T[], v: T): T[] {
+    return list.includes(v) ? list.filter((x) => x !== v) : [...list, v]
+  }
+
+  let afterPick = $state('')
 </script>
 
 <PageHeader title={id ? 'Edit job' : 'New job'} back={cancelHref} backLabel={id ? 'Job' : 'Jobs'} />
@@ -419,19 +465,28 @@ return { stars: repo.stargazers_count }
               <button type="button" class="ghost sm" onclick={() => (js.script = exampleScript)}>Insert an example</button>
             {/if}
           </div>
-          <ScriptEditor
-            value={js.script}
-            onchange={(v) => (js.script = v)}
-            onrun={testRun}
-            secrets={secretNames}
-            env={Object.keys(js.env)}
-            placeholder="const res = await fetch('https://…')"
-          />
+          {#await ScriptEditor}
+            <div class="term min-h-60 text-term-dim">Loading the editor…</div>
+          {:then Editor}
+            {#if Editor}
+              <Editor
+                value={js.script}
+                onchange={(v: string) => (js.script = v)}
+                onrun={testRun}
+                secrets={secretNames}
+                env={Object.keys(js.env)}
+                placeholder="const res = await fetch('https://…')"
+              />
+            {/if}
+          {:catch e}
+            <div class="alert">Could not load the editor: {errorMessage(e)}</div>
+          {/await}
           <span class="hint">
             The body of an async function. <code>fetch(url, &#123; method, headers, body, insecure, redirect, timeout &#125;)</code> works as in a browser;
             <code>insecure: true</code> skips the TLS certificate check and an object <code>body</code> is sent as JSON.
             <code>console.log</code> writes the output, <code>return</code> sets the result, <code>throw</code> fails the run.
-            Also: <code>sleep(ms)</code>, <code>env</code>, <code>secrets</code>, <code>job</code>. Ctrl/⌘+Enter tests it.
+            Also: <code>sleep(ms)</code>, <code>env</code>, <code>secrets</code>, <code>params</code> (values given to a run), <code>job</code>.
+            Ctrl/⌘+Enter tests it.
           </span>
         </div>
 
@@ -441,13 +496,13 @@ return { stars: repo.stargazers_count }
             <KeyValues value={js.env} onchange={(v) => (js.env = v)} keyLabel="NAME" />
           </div>
           <div class="grid gap-1 content-start">
-            <span class="text-[12px] font-medium muted">secrets <span class="faint font-normal">· from the server, never shown</span></span>
+            <span class="text-[12px] font-medium muted">secrets <span class="faint font-normal">· encrypted, never shown</span></span>
             {#if secretNames.length}
               <div class="flex flex-wrap gap-1.5">
                 {#each secretNames as n}<code class="badge"><KeyRound size={11} />secrets.{n}</code>{/each}
               </div>
             {:else}
-              <p class="hint">None set. Add one on the server with <code>KRONIK_SECRET_&lt;NAME&gt;=…</code>, e.g. <code>KRONIK_SECRET_API_TOKEN</code>.</p>
+              <p class="hint">None yet. Add them under <a href={href('settings', 'secrets')}>Settings → Secrets</a>.</p>
             {/if}
           </div>
         </div>
@@ -465,7 +520,7 @@ return { stars: repo.stargazers_count }
       {:else if form.executor === 'command'}
         <label>
           Command
-          <textarea rows="6" required bind:value={command.command} spellcheck="false" placeholder={'pg_dump "$DATABASE_URL" | gzip > /backups/db-$(date +%F).sql.gz'}></textarea>
+          <textarea rows="6" required aria-label="Command" bind:value={command.command} spellcheck="false" placeholder={'pg_dump "$DATABASE_URL" | gzip > /backups/db-$(date +%F).sql.gz'}></textarea>
           <span class="hint">Runs with <code>sh -c</code> in the kronik container. Exit code 0 is success.</span>
         </label>
         <label>Working directory <input class="mono" bind:value={command.dir} placeholder="kronik's directory" spellcheck="false" /></label>
@@ -479,6 +534,15 @@ return { stars: repo.stargazers_count }
         </p>
       {:else}
         <p class="alert">This replica cannot run "{form.executor}" jobs. Choose another executor.</p>
+      {/if}
+
+      {#if form.executor !== 'js' && executors.includes(form.executor)}
+        <p class="hint">
+          <code>&#123;&#123;secret.NAME&#125;&#125;</code> and <code>&#123;&#123;param.NAME&#125;&#125;</code> in the URL, headers, body and environment are
+          filled in when the job runs; secret values are hidden in the output.
+          {#if secretNames.length}Secrets: {#each secretNames as n, i}<code>{n}</code>{i < secretNames.length - 1 ? ', ' : ''}{/each}.{/if}
+          {#if form.executor !== 'http'}Params are also in <code>KRONIK_PARAM_&lt;NAME&gt;</code>.{/if}
+        </p>
       {/if}
 
       {#if executors.includes(form.executor)}
@@ -526,6 +590,83 @@ return { stars: repo.stargazers_count }
         <div class="grid grid-cols-2 gap-2 content-start">
           <label>Retries <input type="number" min="0" max="100" bind:value={form.retries} /></label>
           <label>Retry after (s) <input type="number" min="0" bind:value={form.retry_delay_seconds} disabled={!form.retries} /></label>
+        </div>
+        <label>
+          Random delay (seconds)
+          <input type="number" min="0" max="3600" bind:value={form.jitter_seconds} />
+          <span class="hint">Each scheduled run waits 0 to this many seconds, so jobs due at the same minute do not all start at once.</span>
+        </label>
+        <div class="grid gap-1 content-start">
+          <span class="text-[12px] font-medium muted">Run after other jobs</span>
+          <div class="flex flex-wrap items-center gap-1.5">
+            {#each form.after_jobs as a}
+              <span class="badge">
+                {others.find((o) => o.id === a)?.name ?? a}
+                <button type="button" class="ghost icon p-0!" aria-label="Remove" onclick={() => (form.after_jobs = form.after_jobs.filter((x) => x !== a))}>×</button>
+              </span>
+            {/each}
+            <select
+              bind:value={afterPick}
+              aria-label="Add a job to run after"
+              onchange={() => {
+                if (afterPick && !form.after_jobs.includes(afterPick)) form.after_jobs = [...form.after_jobs, afterPick]
+                afterPick = ''
+              }}
+            >
+              <option value="">Add a job…</option>
+              {#each others.filter((o) => !form.after_jobs.includes(o.id)) as o}<option value={o.id}>{o.name}</option>{/each}
+            </select>
+            {#if form.after_jobs.length}
+              <select bind:value={form.after_on} aria-label="On">
+                <option value="succeeded">when it succeeds</option>
+                <option value="failed">when it fails</option>
+                <option value="finished">when it ends either way</option>
+              </select>
+            {/if}
+          </div>
+          <span class="hint">
+            A run of this job is queued when a run of one of these ends; it gets <code>after_job</code>, <code>after_run</code> and
+            <code>after_status</code> as params. Its own schedule keeps going too (use a far schedule such as <code>0 0 1 1 *</code> to run only after).
+          </span>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel grid gap-3 p-5 2xl:col-span-2">
+      <h2 class="panel-title mb-0!">Alerts</h2>
+      <div class="grid gap-x-6 gap-y-4 md:grid-cols-2">
+        <label>
+          Alert when it did not run for (minutes)
+          <input type="number" min="1" bind:value={alertMinutes} placeholder="off" />
+          <span class="hint">
+            No successful run for this long marks the job failing and sends the "did not run" notification, e.g. when every replica was down
+            or the schedule was paused. Leave empty for no alert.
+          </span>
+        </label>
+        <div class="grid gap-1.5 content-start">
+          <span class="text-[12px] font-medium muted">Notify</span>
+          {#if channels.length}
+            <div class="flex flex-wrap gap-x-4 gap-y-1.5">
+              {#each channels as c}
+                <label class="check">
+                  <input type="checkbox" checked={form.notify.channels.includes(c.id)} onchange={() => (form.notify.channels = toggleIn(form.notify.channels, c.id))} />
+                  {c.name} <span class="faint small">{c.type}</span>
+                </label>
+              {/each}
+            </div>
+            <span class="text-[12px] font-medium muted mt-1.5">when the job</span>
+            <div class="flex flex-wrap gap-x-4 gap-y-1.5">
+              {#each events as e}
+                <label class="check" title={e.hint}>
+                  <input type="checkbox" checked={form.notify.on.includes(e.id)} onchange={() => (form.notify.on = toggleIn(form.notify.on, e.id))} />
+                  {e.label}
+                </label>
+              {/each}
+            </div>
+            {#if form.notify.channels.length && !form.notify.on.length}<p class="hint text-warn!">Pick at least one event.</p>{/if}
+          {:else}
+            <p class="hint">No channels yet. Add Slack, Teams, a webhook or e-mail under <a href={href('settings', 'notifications')}>Settings → Notifications</a>.</p>
+          {/if}
         </div>
       </div>
     </section>

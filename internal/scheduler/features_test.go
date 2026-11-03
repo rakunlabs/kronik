@@ -356,9 +356,12 @@ func TestPauseWindowsAndTagLimits(t *testing.T) {
 
 	limit := func() scheduler.Options { return scheduler.Options{TagLimits: map[string]int{"heavy": 2}} }
 
+	var limited []*node
+
 	for _, name := range []string{"a", "b"} {
 		nd := startNode(t, st, name)
 		nd.sch.SetOptions(limit)
+		limited = append(limited, nd)
 	}
 
 	for _, id := range ids {
@@ -382,7 +385,12 @@ func TestPauseWindowsAndTagLimits(t *testing.T) {
 		t.Fatalf("%d heavy runs at once, limit 2", p)
 	}
 
-	// Paused: every scheduled run is skipped.
+	// Paused: every scheduled run is skipped. Every replica reads the same
+	// setting, so the others stop first.
+	for _, nd := range limited {
+		nd.stop()
+	}
+
 	paused := startNode(t, st, "p")
 	paused.sch.SetOptions(func() scheduler.Options { return scheduler.Options{Paused: true} })
 

@@ -1,6 +1,6 @@
 <script lang="ts">
   import { Square, Copy, Check, RotateCcw, ArrowDownToLine } from '@lucide/svelte'
-  import { api, errorMessage, isNotFound, type Run } from '../lib/api'
+  import { api, errorMessage, isNotFound, runEvents, type Run } from '../lib/api'
   import { href, go } from '../lib/router.svelte'
   import { fmtTime, duration, relative } from '../lib/format'
   import { clock, poll } from '../lib/live.svelte'
@@ -36,10 +36,41 @@
     }
   }
 
-  // Poll fast while the run goes on; stop once it has finished.
+  // While the run goes on the server streams it; when the stream breaks
+  // (a proxy that does not pass it) the page polls instead.
+  let streamFailed = $state(false)
+
+  $effect(() => {
+    if (!live || notFound || streamFailed) return
+    if (typeof EventSource === 'undefined') {
+      streamFailed = true
+      return
+    }
+    let got = false
+    const stop = runEvents(
+      id,
+      (r) => {
+        got = true
+        gen++
+        run = r
+        error = ''
+      },
+      () => {
+        // The browser reconnects by itself; give up on a stream that never
+        // delivered anything.
+        if (!got) {
+          stop()
+          streamFailed = true
+        }
+      },
+    )
+    return stop
+  })
+
   $effect(() => {
     if (!live || notFound) return
-    return poll(load, 1500)
+    if (streamFailed) return poll(load, 1500)
+    if (!run) load()
   })
 
   // Keep the end of the output in view while following, including the last
@@ -90,7 +121,15 @@
     }
   }
 
-  const triggerText = { schedule: 'Schedule', manual: 'Run now', retry: 'Retry' }
+  const triggerText: Record<Run['trigger'], string> = {
+    schedule: 'Schedule',
+    manual: 'Run now',
+    retry: 'Retry',
+    webhook: 'Webhook',
+    after: 'After another job',
+    ping: 'Reported',
+  }
+  const params = $derived(Object.entries(run?.params ?? {}))
 </script>
 
 {#if notFound}
@@ -128,13 +167,19 @@
         {triggerText[run.trigger]}{run.attempt > 1 ? ` · attempt ${run.attempt}` : ''}
         {#if run.triggered_by}{' '}<span class="faint">by {run.triggered_by}</span>{/if}
       </dd>
-      <dt>Replica</dt><dd class="mono">{run.node || '—'}</dd>
+      <dt>Replica</dt><dd class="mono">{run.node || (run.trigger === 'ping' ? 'outside kronik' : '—')}</dd>
       <dt>Scheduled</dt><dd>{fmtTime(run.scheduled_at)}</dd>
       <dt>Result code</dt><dd class="mono">{run.result_code ?? '—'}</dd>
       <dt>Started</dt><dd>{fmtTime(run.started_at)}</dd>
       <dt>Finished</dt><dd>{fmtTime(run.finished_at)}</dd>
       <dt>Duration</dt><dd>{duration(run.started_at, run.finished_at, clock.now)}</dd>
       {#if run.canceled_by}<dt>Canceled by</dt><dd>{run.canceled_by}</dd>{/if}
+      {#if params.length}
+        <dt>Params</dt>
+        <dd class="sm:col-span-3">
+          {#each params as [k, v]}<code class="badge mr-1 mb-1 font-mono!">{k}={v}</code>{/each}
+        </dd>
+      {/if}
       {#if run.status === 'queued'}
         <dt>Starts</dt>
         <dd>{new Date(run.not_before).getTime() > clock.now ? relative(run.not_before, clock.now) : 'when a replica is free'}</dd>

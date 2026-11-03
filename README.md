@@ -11,8 +11,11 @@ A job is an **HTTP request**, a **JavaScript** script (`fetch`, `await`,
 `console.log`, `return` a result), a **shell command**, or a **container**
 on Docker, Docker Swarm or Kubernetes. It runs on a cron schedule in any time
 zone, with timeout, retries and overlap rules, and keeps its output and
-result. AI agents can manage jobs over **MCP**. Everything else is set from
-*Settings → Configuration* and applies to every replica at once.
+result. Jobs notify **Slack, Teams, webhooks or e-mail** when they fail,
+recover or do not run, use **encrypted secrets** set from the UI, run after
+each other or from a **webhook**, and pause for maintenance windows. AI
+agents can manage jobs over **MCP**. Everything else is set from *Settings*
+and applies to every replica at once.
 
 ## Quick start
 
@@ -25,7 +28,8 @@ Open http://localhost:8080 and create a job.
 kronik needs only a PostgreSQL connection; its tables start with `kronik_`:
 
 ```sh
-KRONIK_STORE_DSN='postgres://user:pass@host:5432/kronik' kronik
+KRONIK_STORE_DSN='postgres://user:pass@host:5432/kronik' \
+KRONIK_SECRETS_KEY="$(openssl rand -base64 32)" kronik
 ```
 
 There is no login. Put kronik behind your reverse proxy and have it send

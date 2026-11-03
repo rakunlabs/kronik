@@ -1,10 +1,12 @@
 <script lang="ts">
-  import { Plus, Search, Play, Pause, CalendarCheck, ArrowUp, ArrowDown } from '@lucide/svelte'
+  import { Plus, Search, Play, Pause, CalendarCheck, ArrowUp, ArrowDown, Trash2, X } from '@lucide/svelte'
   import { api, errorMessage, type Job, type Stats } from '../lib/api'
   import { href, go, replace, router } from '../lib/router.svelte'
   import { relative, nextRun, fmtTime } from '../lib/format'
   import { clock, poll, debounced } from '../lib/live.svelte'
   import { toast } from '../lib/toast.svelte'
+  import { confirm } from '../lib/confirm.svelte'
+  import { app } from '../lib/app.svelte'
   import { rowClick } from '../lib/rows'
   import StatusBadge from '../lib/StatusBadge.svelte'
   import ResultView from '../lib/ResultView.svelte'
@@ -151,6 +153,52 @@
   )
 
   const filtered = $derived(!!(filter.value.search || filter.value.tag))
+
+  // Selected jobs, for actions on many at once. Jobs no longer listed drop
+  // out of the selection.
+  let selected = $state<string[]>([])
+  $effect(() => {
+    if (!sorted) return
+    const ids = new Set(sorted.map((j) => j.id))
+    if (selected.some((s) => !ids.has(s))) selected = selected.filter((s) => ids.has(s))
+  })
+  const allSelected = $derived(!!sorted?.length && selected.length === sorted.length)
+  let bulkBusy = $state(false)
+
+  function toggleAll() {
+    selected = allSelected ? [] : (sorted ?? []).map((j) => j.id)
+  }
+
+  async function bulk(action: 'pause' | 'resume' | 'delete' | 'trigger') {
+    const n = selected.length
+    const what = `${n} job${n === 1 ? '' : 's'}`
+    if (action === 'delete' || action === 'trigger') {
+      const ok = await confirm({
+        title: action === 'delete' ? `Delete ${what}?` : `Run ${what} now?`,
+        body:
+          action === 'delete'
+            ? 'They are deleted with all their runs. Runs going on now are canceled.'
+            : 'A run of each is queued now. They do their real work.',
+        action: action === 'delete' ? 'Delete' : 'Run',
+        danger: action === 'delete',
+      })
+      if (!ok) return
+    }
+    bulkBusy = true
+    gen++
+    try {
+      const res = await api.bulk(action, $state.snapshot(selected))
+      const failed = Object.keys(res.failed).length
+      const verb = { pause: 'paused', resume: 'resumed', delete: 'deleted', trigger: 'queued' }[action]
+      toast(`${res.done.length} ${verb}${failed ? `, ${failed} failed: ${Object.values(res.failed)[0]}` : ''}`, failed ? { tone: 'danger' } : undefined)
+      selected = Object.keys(res.failed)
+      jobs = await api.jobs(filter.value.search, filter.value.tag)
+    } catch (e) {
+      toast(errorMessage(e), { tone: 'danger' })
+    } finally {
+      bulkBusy = false
+    }
+  }
 </script>
 
 <PageHeader title="Jobs">
@@ -188,6 +236,20 @@
 </div>
 
 {#if error && jobs}<div class="alert mb-3">{error}</div>{/if}
+{#if app.info?.paused}
+  <div class="note mb-3">All schedules are paused: scheduled runs are skipped until it is turned off in Settings → Configuration → Scheduling.</div>
+{/if}
+
+{#if selected.length}
+  <div class="panel sticky top-2 z-10 mb-2 flex flex-wrap items-center gap-2 px-3 py-2 shadow-[0_8px_24px_-12px_rgb(0_0_0/0.3)]">
+    <span class="text-[13px] font-medium mr-1">{selected.length} selected</span>
+    <button class="sm" disabled={bulkBusy} onclick={() => bulk('trigger')}><Play size={12} /> Run</button>
+    <button class="sm" disabled={bulkBusy} onclick={() => bulk('pause')}><Pause size={12} /> Pause</button>
+    <button class="sm" disabled={bulkBusy} onclick={() => bulk('resume')}><CalendarCheck size={12} /> Resume</button>
+    <button class="sm danger" disabled={bulkBusy} onclick={() => bulk('delete')}><Trash2 size={12} /> Delete</button>
+    <button class="ghost sm ml-auto" onclick={() => (selected = [])}><X size={12} /> Clear</button>
+  </div>
+{/if}
 
 <div class="panel table-wrap">
   <table>
@@ -204,6 +266,9 @@
             </button>
           </th>
         {/snippet}
+        <th class="w-0 pr-0!">
+          <input type="checkbox" aria-label="Select all" checked={allSelected} indeterminate={selected.length > 0 && !allSelected} onchange={toggleAll} />
+        </th>
         {@render sortable('name', 'Name')}
         <th>Schedule</th>
         {@render sortable('last', 'Last run')}
@@ -214,13 +279,13 @@
     <tbody>
       {#if sorted === null}
         <tr>
-          <td colspan="5" class="empty">
+          <td colspan="6" class="empty">
             {#if error}<span class="text-danger">Could not load jobs: {error}</span>{:else}Loading…{/if}
           </td>
         </tr>
       {:else if sorted.length === 0}
         <tr>
-          <td colspan="5" class="empty">
+          <td colspan="6" class="empty">
             {#if filtered}
               No job matches. <button class="ghost sm" onclick={() => ((search = ''), (tag = ''))}>Clear filter</button>
             {:else}
@@ -231,11 +296,22 @@
       {:else}
         {#each sorted as j (j.id)}
           <tr class="link" onclick={rowClick(() => go('job', j.id))}>
+            <td class="w-0 pr-0!">
+              <input
+                type="checkbox"
+                aria-label="Select {j.name}"
+                checked={selected.includes(j.id)}
+                onclick={(e) => e.stopPropagation()}
+                onchange={() => (selected = selected.includes(j.id) ? selected.filter((s) => s !== j.id) : [...selected, j.id])}
+              />
+            </td>
             <td class="grow">
               <div class="flex items-center gap-2 min-w-0">
                 <span class="dot" style:color={j.enabled ? 'var(--ok)' : 'var(--border-strong)'} title={j.enabled ? 'Active' : 'Paused'}></span>
                 <a href={href('job', j.id)} class="font-medium truncate min-w-16 shrink">{j.name}</a>
                 <span class="badge">{j.executor}</span>
+                {#if j.health === 'failing'}<span class="badge danger" title="The last run failed">failing</span>{/if}
+                {#if j.alerted_at}<span class="badge warn" title="No success within its alert time">did not run</span>{/if}
                 {#each j.tags.slice(0, 3) as t}<span class="badge">{t}</span>{/each}
                 {#if j.tags.length > 3}<span class="badge" title={j.tags.slice(3).join(', ')}>+{j.tags.length - 3}</span>{/if}
               </div>

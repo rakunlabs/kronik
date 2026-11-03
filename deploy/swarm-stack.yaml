@@ -1,6 +1,7 @@
 # Docker Swarm: several kronik replicas on one PostgreSQL.
 #   printf 'postgres://kronik:secret@postgres:5432/kronik?sslmode=disable' | docker secret create kronik_dsn -
 #   printf 'secret' | docker secret create kronik_pg_password -
+#   openssl rand -base64 32 | tr -d '\n' | docker secret create kronik_secrets_key -
 #   docker stack deploy -c deploy/swarm-stack.yaml kronik
 #
 # Point KRONIK_STORE_DSN at a managed PostgreSQL in production instead of the
@@ -8,7 +9,7 @@
 services:
   kronik:
     image: ghcr.io/rakunlabs/kronik:latest
-    entrypoint: ["/bin/sh", "-c", "KRONIK_STORE_DSN=$$(cat /run/secrets/kronik_dsn) exec /kronik"]
+    entrypoint: ["/bin/sh", "-c", "KRONIK_STORE_DSN=$$(cat /run/secrets/kronik_dsn) KRONIK_SECRETS_KEY=$$(cat /run/secrets/kronik_secrets_key) exec /kronik"]
     environment:
       # Each task gets its own name in runs and the replica list.
       KRONIK_NODE_NAME: "{{.Service.Name}}.{{.Task.Slot}}.{{.Task.ID}}"
@@ -16,6 +17,7 @@ services:
       KRONIK_EXECUTOR_KUBERNETES_ENABLED: "false"
     secrets:
       - kronik_dsn
+      - kronik_secrets_key
     # Swarm jobs create services, which needs a manager's engine: kronik runs
     # on managers and uses their socket (root on the host).
     user: "0:0"
@@ -56,6 +58,8 @@ services:
 
 secrets:
   kronik_dsn:
+    external: true
+  kronik_secrets_key:
     external: true
   kronik_pg_password:
     external: true

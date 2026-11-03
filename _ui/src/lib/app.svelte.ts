@@ -9,7 +9,10 @@ let delay = 1000
 function load() {
   api
     .info()
-    .then((i) => (app.info = i))
+    .then((i) => {
+      app.info = i
+      delay = 1000
+    })
     .catch(() => {
       setTimeout(load, delay)
       delay = Math.min(delay * 2, 30_000)
@@ -17,3 +20,9 @@ function load() {
 }
 
 load()
+
+// Settings changed elsewhere (a pause, the environment, executors) show up
+// within a minute.
+setInterval(() => {
+  if (document.visibilityState === 'visible') load()
+}, 60_000)

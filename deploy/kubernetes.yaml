@@ -1,5 +1,6 @@
 # Kubernetes: several kronik replicas on an existing PostgreSQL.
-#   kubectl create secret generic kronik --from-literal=dsn='postgres://user:pass@host:5432/kronik?sslmode=require'
+#   kubectl create secret generic kronik --from-literal=dsn='postgres://user:pass@host:5432/kronik?sslmode=require' \
+#     --from-literal=secrets-key="$(openssl rand -base64 32)"
 #   kubectl apply -f deploy/kubernetes.yaml
 # Put the Service behind your Ingress / reverse proxy. It must sign users in
 # and set X-User, replacing any X-User the client sent; nothing else should
@@ -81,6 +82,12 @@ spec:
                 secretKeyRef:
                   name: kronik
                   key: dsn
+            # Encrypts the secrets set from the UI.
+            - name: KRONIK_SECRETS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: kronik
+                  key: secrets-key
             - name: KRONIK_NODE_NAME
               valueFrom:
                 fieldRef:

@@ -217,6 +217,17 @@
           {/if}
         </div>
 
+        {#if g.id === 'metrics' && app.info && !app.info.metrics.collector}
+          <div class="note mb-4">
+            No OpenTelemetry collector is set on this replica, so nothing is sent. Set <code>OTEL_EXPORTER_OTLP_ENDPOINT</code> on the replicas and
+            restart. Metrics: <code>kronik.runs</code>, <code>kronik.run.duration</code>,
+            <code>kronik.jobs</code>, <code>kronik.queue</code>, <code>kronik.notifications</code>.
+          </div>
+        {/if}
+        {#if g.id === 'notifications'}
+          <p class="note mb-4">Channels (Slack, Teams, webhooks, e-mail) are set under <a href="#/settings/notifications">Settings → Notifications</a>.</p>
+        {/if}
+
         {#if checkable[g.id] && checks[g.id] && checks[g.id] !== 'busy'}
           {@const c = checks[g.id] as { ok: boolean; message: string }}
           <div

@@ -130,10 +130,25 @@ export type Job = {
   updated_at: string
   created_by: string
   updated_by: string
+  jitter_seconds: number
+  alert_after_seconds: number
+  alerted_at: string | null
+  health: '' | 'ok' | 'failing'
+  notify: Notify
+  has_hook: boolean
+  after_jobs: string[]
+  after_on: AfterOn
   last_run?: { id: string; status: RunStatus; started_at: string | null; finished_at: string | null; result: string }
 }
 
-export type JobInput = Omit<Job, 'id' | 'next_run_at' | 'created_at' | 'updated_at' | 'created_by' | 'updated_by' | 'last_run'> & {
+export type NotifyEvent = 'failure' | 'recovery' | 'no_run' | 'success'
+export type Notify = { channels: string[]; on: NotifyEvent[] }
+export type AfterOn = 'succeeded' | 'failed' | 'finished'
+
+export type JobInput = Omit<
+  Job,
+  'id' | 'next_run_at' | 'created_at' | 'updated_at' | 'created_by' | 'updated_by' | 'last_run' | 'alerted_at' | 'health' | 'has_hook'
+> & {
   updated_at?: string
 }
 
@@ -141,7 +156,7 @@ export type Run = {
   id: string
   job_id: string
   job_name: string
-  trigger: 'schedule' | 'manual' | 'retry'
+  trigger: 'schedule' | 'manual' | 'retry' | 'webhook' | 'after' | 'ping'
   status: RunStatus
   attempt: number
   scheduled_at: string
@@ -158,7 +173,72 @@ export type Run = {
   result: string
   triggered_by: string
   canceled_by: string
+  params: Record<string, string>
 }
+
+export type Channel = {
+  id: string
+  name: string
+  type: 'slack' | 'teams' | 'webhook' | 'email'
+  config: { url?: string; headers?: Record<string, string>; to?: string[] }
+  created_at: string
+  created_by: string
+  updated_at: string
+  updated_by: string
+}
+
+export type ChannelInput = Pick<Channel, 'name' | 'type' | 'config'>
+
+export type Notification = {
+  id: string
+  channel_id: string
+  channel_name: string
+  job_id: string
+  run_id: string
+  event: string
+  payload: { job_name?: string; status?: string; error?: string }
+  status: 'pending' | 'sent' | 'failed'
+  attempts: number
+  next_at: string
+  created_at: string
+  sent_at: string | null
+  error: string
+}
+
+export type Secret = {
+  name: string
+  description: string
+  source: 'ui' | 'env'
+  created_at?: string
+  created_by?: string
+  updated_at?: string
+  updated_by?: string
+  readable: boolean
+  shadows?: boolean
+}
+
+export type SecretKey = { id: string; master: string; active: boolean; created_at: string; secrets: number }
+
+export type SecretsPage = {
+  can_store: boolean
+  master_id: string
+  problem: string
+  secrets: Secret[]
+  keys: SecretKey[]
+  rotate: string
+}
+
+export type RunPoint = { id: string; status: RunStatus; trigger: string; scheduled_at: string; duration_ms: number }
+
+export type CalendarPage = {
+  from: string
+  to: string
+  items: { job_id: string; job_name: string; at: string; skipped?: string }[]
+  capped: string[]
+  windows: { expr: string; from: string; to: string; tags: string[]; pause?: boolean }[]
+}
+
+export type BulkResult = { done: string[]; failed: Record<string, string> }
 
 export type TestRun = {
   status: RunStatus
@@ -214,8 +294,10 @@ export type Info = {
   secrets: string[]
   mcp: { enabled: boolean; read_only: boolean }
   environment: { name: string; color: string }
-  retention: { runs: string; runs_per_job: number; audit: string; at: string; zone: string }
+  retention: { runs: string; runs_per_job: number; audit: string; at: string; zone: string; notifications?: string }
   settings: { editable: boolean }
+  paused: boolean
+  metrics: { enabled: boolean; collector: boolean }
 }
 
 export type SettingType = 'bool' | 'int' | 'string' | 'duration' | 'list' | 'time' | 'choice'
@@ -295,13 +377,20 @@ export const api = {
   updateJob: (id: string, j: JobInput) => request<Job>('PUT', `/jobs/${enc(id)}`, j),
   deleteJob: (id: string) => request<void>('DELETE', `/jobs/${enc(id)}`),
   setEnabled: (id: string, on: boolean) => request<Job>('POST', `/jobs/${enc(id)}/${on ? 'enable' : 'disable'}`),
-  trigger: (id: string) => request<{ run_id: string }>('POST', `/jobs/${enc(id)}/trigger`),
+  trigger: (id: string, params?: Record<string, string>) =>
+    request<{ run_id: string }>('POST', `/jobs/${enc(id)}/trigger`, params && Object.keys(params).length ? { params } : undefined),
+  newHook: (id: string) => request<{ token: string }>('POST', `/jobs/${enc(id)}/hook`),
+  removeHook: (id: string) => request<void>('DELETE', `/jobs/${enc(id)}/hook`),
+  jobStats: (id: string, n = 100, s?: S) => request<RunPoint[]>('GET', `/jobs/${enc(id)}/stats` + qs({ n }), undefined, s),
+  jobHistory: (id: string, s?: S) => request<AuditEntry[]>('GET', `/jobs/${enc(id)}/history`, undefined, s),
+  bulk: (action: 'pause' | 'resume' | 'delete' | 'trigger', ids: string[]) => request<BulkResult>('POST', '/jobs/bulk', { action, ids }),
+  calendar: (from: string, to: string, tag = '', s?: S) => request<CalendarPage>('GET', '/calendar' + qs({ from, to, tag }), undefined, s),
 
   runs: (p: RunQuery = {}, s?: S) => request<Run[]>('GET', '/runs' + qs(p), undefined, s),
   run: (id: string, s?: S) => request<Run>('GET', `/runs/${enc(id)}`, undefined, s),
   cancelRun: (id: string) => request<void>('POST', `/runs/${enc(id)}/cancel`),
 
-  testJob: (j: JobInput, s?: S) => request<TestRun>('POST', '/jobs/test', j, s),
+  testJob: (j: JobInput & { params?: Record<string, string> }, s?: S) => request<TestRun>('POST', '/jobs/test', j, s),
   checkScript: (script: string, s?: S) => request<{ problems: Problem[] }>('POST', '/script/check', { script }, s),
   audit: (p: { job_id?: string; user?: string; before?: string; limit?: number } = {}, s?: S) =>
     request<AuditEntry[]>('GET', '/audit' + qs(p), undefined, s),
@@ -310,4 +399,30 @@ export const api = {
   putSettings: (c: { values?: Record<string, unknown>; reset?: string[] }) => request<SettingsPage>('PUT', '/settings', c),
   cleanup: () => request<{ runs: number; audit: number }>('POST', '/settings/cleanup', {}),
   checkExecutor: (name: string) => request<{ ok: boolean; message: string }>('POST', `/settings/check/${enc(name)}`, {}),
+
+  secrets: (s?: S) => request<SecretsPage>('GET', '/secrets', undefined, s),
+  putSecret: (name: string, v: { description: string; value?: string }) => request<SecretsPage>('PUT', `/secrets/${enc(name)}`, v),
+  deleteSecret: (name: string) => request<SecretsPage>('DELETE', `/secrets/${enc(name)}`),
+  rotateSecrets: () => request<{ key: string; reencrypted: number; rewrapped: number; dropped: number }>('POST', '/secrets/rotate', {}),
+
+  channels: (s?: S) => request<Channel[]>('GET', '/channels', undefined, s),
+  createChannel: (c: ChannelInput) => request<Channel>('POST', '/channels', c),
+  updateChannel: (id: string, c: ChannelInput) => request<Channel>('PUT', `/channels/${enc(id)}`, c),
+  deleteChannel: (id: string) => request<void>('DELETE', `/channels/${enc(id)}`),
+  testChannel: (id: string) => request<{ ok: boolean; message: string }>('POST', `/channels/${enc(id)}/test`, {}),
+  notifications: (p: { job_id?: string; limit?: number } = {}, s?: S) =>
+    request<Notification[]>('GET', '/notifications' + qs(p), undefined, s),
+}
+
+// runEvents follows a run as the server streams it; onRun gets the run on
+// every change. It returns a function that stops following.
+export function runEvents(id: string, onRun: (r: Run) => void, onError: () => void): () => void {
+  const es = new EventSource(`${base}/runs/${enc(id)}/events`)
+  es.addEventListener('run', (e) => {
+    try {
+      onRun(JSON.parse((e as MessageEvent).data))
+    } catch {}
+  })
+  es.onerror = () => onError()
+  return () => es.close()
 }

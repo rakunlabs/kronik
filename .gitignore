@@ -4,3 +4,5 @@
 /_ui/node_modules/
 /internal/server/dist/*
 !/internal/server/dist/.gitkeep
+/_ui/test-results/
+/_ui/playwright-report/

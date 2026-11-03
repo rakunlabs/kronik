@@ -78,7 +78,7 @@
     }
   }
 
-  const triggerText = { schedule: 'schedule', manual: 'manual', retry: 'retry' }
+  const triggerText: Record<Run['trigger'], string> = { schedule: 'schedule', manual: 'manual', retry: 'retry', webhook: 'webhook', after: 'after', ping: 'reported' }
   const cols = $derived(showJob ? 8 : 7)
 </script>
 

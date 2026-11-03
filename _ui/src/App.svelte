@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { CalendarClock, History, Settings as SettingsIcon, Sun, Moon, Monitor, Menu, X } from '@lucide/svelte'
+  import { CalendarClock, CalendarDays, History, Settings as SettingsIcon, Sun, Moon, Monitor, Menu, X, PauseCircle } from '@lucide/svelte'
   import { app } from './lib/app.svelte'
   import { router, href, nav } from './lib/router.svelte'
   import Overlays from './lib/Overlays.svelte'
@@ -9,6 +9,7 @@
   import Runs from './routes/Runs.svelte'
   import Run from './routes/Run.svelte'
   import Settings from './routes/Settings.svelte'
+  import Calendar from './routes/Calendar.svelte'
 
   const route = $derived(router.route)
 
@@ -16,6 +17,7 @@
   const menu = [
     { label: 'Jobs', icon: CalendarClock, to: href('jobs'), sections: ['jobs', 'job', 'new', 'edit'] },
     { label: 'Runs', icon: History, to: href('runs'), sections: ['runs', 'run'] },
+    { label: 'Calendar', icon: CalendarDays, to: href('calendar'), sections: ['calendar'] },
     { label: 'Settings', icon: SettingsIcon, to: href('settings'), sections: ['settings'] },
   ]
 
@@ -26,6 +28,7 @@
     edit: 'Edit job',
     runs: 'Runs',
     run: 'Run',
+    calendar: 'Calendar',
     settings: 'Settings',
   }
   const env = $derived(app.info?.environment?.name ? app.info.environment : null)
@@ -113,6 +116,16 @@
       </button>
     </div>
 
+    {#if app.info?.paused}
+      <a
+        href={href('settings', 'configuration', { group: 'scheduling' })}
+        class="flex items-center gap-2 rounded-box border border-warn/50 bg-warn-soft px-2.5 py-1.5 text-xs font-semibold text-warn hover:no-underline"
+        title="Every scheduled run is skipped"
+      >
+        <PauseCircle size={14} /> Schedules paused
+      </a>
+    {/if}
+
     <nav class="grid gap-0.5 {menuOpen ? '' : 'max-md:hidden'}">
       {#each menu as n}
         {@const active = n.sections.includes(route.section)}
@@ -166,6 +179,8 @@
       <Runs />
     {:else if route.section === 'run' && route.id}
       {#key route.id}<Run id={route.id} />{/key}
+    {:else if route.section === 'calendar'}
+      <Calendar />
     {:else if route.section === 'settings'}
       <Settings tab={route.id} />
     {:else}

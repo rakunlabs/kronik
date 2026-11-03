@@ -463,8 +463,12 @@ func (s *Store) scheduleJob(ctx context.Context, tx *sql.Tx, j *Job, p Plan, now
 	for _, t := range p.Times {
 		status, errText := StatusQueued, ""
 
-		switch j.Concurrency {
-		case ConcurrencyForbid:
+		// A pause or a window skips the run before the concurrency rule is
+		// looked at: a replaced run is not canceled for one that will not run.
+		switch {
+		case p.Skip != "":
+			status, errText = StatusSkipped, p.Skip
+		case j.Concurrency == ConcurrencyForbid:
 			var active bool
 			if err := tx.QueryRowContext(ctx, s.q(`SELECT EXISTS (SELECT 1 FROM {runs} WHERE job_id = $1 AND status IN ($2, $3))`),
 				j.ID, StatusQueued, StatusRunning).Scan(&active); err != nil {
@@ -474,14 +478,10 @@ func (s *Store) scheduleJob(ctx context.Context, tx *sql.Tx, j *Job, p Plan, now
 			if active {
 				status, errText = StatusSkipped, "previous run still active"
 			}
-		case ConcurrencyReplace:
+		case j.Concurrency == ConcurrencyReplace:
 			if err := s.replaceActive(ctx, tx, j.ID, now); err != nil {
 				return err
 			}
-		}
-
-		if status == StatusQueued && p.Skip != "" {
-			status, errText = StatusSkipped, p.Skip
 		}
 
 		var finished any
