@@ -17,7 +17,10 @@ Tables are created on start; every one starts with `kronik_`
 (`store.table_prefix`), so kronik can share a schema with other applications.
 Migrations take a lock, so replicas can start together. When the user of
 `store.dsn` may not create tables, give one that may as `store.migrate_dsn`:
-it is used only for the migrations, then closed. `GET /healthz` answers `OK` while the database is reachable.
+it is used only for the migrations, then closed. The tables then belong to
+that user: grant the `store.dsn` user `SELECT, INSERT, UPDATE, DELETE` on
+them, e.g. with `ALTER DEFAULT PRIVILEGES FOR ROLE <migrate user> GRANT …
+ON TABLES TO <user>` before the first start. `GET /healthz` answers `OK` while the database is reachable.
 
 On SIGTERM a replica stops taking new runs and gives the runs it has going
 `scheduler.shutdown_timeout` to finish. Then it cancels them, waits up to 10s

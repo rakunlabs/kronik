@@ -45,6 +45,12 @@ func (m *memStore) AddSecretKey(_ context.Context, k *store.SecretKey) error {
 	defer m.mu.Unlock()
 
 	for _, o := range m.keys {
+		if o.Active && o.Master != k.Master {
+			return store.ErrConflict
+		}
+	}
+
+	for _, o := range m.keys {
 		o.Active = false
 	}
 

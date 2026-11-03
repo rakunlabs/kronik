@@ -82,6 +82,13 @@ parameter `kronik` under the prefix), in the same shape as the file. A source ca
 Keeping `store.dsn` and `secrets.key` in a secret store keeps them out of the
 environment.
 
+A store that is turned on but cannot be read (no access, wrong path) stops
+kronik from starting; a missing `kronik` entry is skipped. `AWS_REGION` and
+`GCP_PROJECT_ID` are often set by the platform (EKS, ECS, GKE): if you do not
+keep the configuration there, turn those stores off, e.g.
+`CONFIG_SET_AWSSECRETS=false CONFIG_SET_AWSSSM=false`. Vault also needs
+`VAULT_SECRET_BASE_PATH` (the mount) once `VAULT_ADDR` is set.
+
 Values marked *UI* below are only the starting point: *Settings →
 Configuration* changes them while kronik runs, for every replica.
 

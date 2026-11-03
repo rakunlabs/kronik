@@ -42,14 +42,31 @@ func (s *Store) SecretKeys(ctx context.Context) ([]*SecretKey, error) {
 	return out, rows.Err()
 }
 
-// AddSecretKey stores a new data key and makes it the active one.
+// AddSecretKey stores a new data key and makes it the active one. It fails
+// with a conflict when the active key is wrapped by another master key: the
+// key was changed meanwhile.
 func (s *Store) AddSecretKey(ctx context.Context, k *SecretKey) error {
 	return s.inTxRetry(ctx, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, s.q(`LOCK TABLE {secret_keys} IN SHARE ROW EXCLUSIVE MODE`)); err != nil {
+			return err
+		}
+
+		var master string
+
+		err := tx.QueryRowContext(ctx, s.q(`SELECT master FROM {secret_keys} WHERE active`)).Scan(&master)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+
+		if err == nil && master != k.Master {
+			return Conflict("the secrets key was changed to %s meanwhile", master)
+		}
+
 		if _, err := tx.ExecContext(ctx, s.q(`UPDATE {secret_keys} SET active = FALSE WHERE active`)); err != nil {
 			return err
 		}
 
-		_, err := tx.ExecContext(ctx, s.q(`INSERT INTO {secret_keys} (id, wrapped, master, active, created_at) VALUES ($1, $2, $3, TRUE, $4)`),
+		_, err = tx.ExecContext(ctx, s.q(`INSERT INTO {secret_keys} (id, wrapped, master, active, created_at) VALUES ($1, $2, $3, TRUE, $4)`),
 			k.ID, k.Wrapped, k.Master, k.CreatedAt)
 
 		return err
@@ -70,6 +87,10 @@ type Rewrap struct {
 // meanwhile.
 func (s *Store) RewrapSecretKeys(ctx context.Context, keys []Rewrap) error {
 	return s.inTxRetry(ctx, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, s.q(`LOCK TABLE {secret_keys} IN SHARE ROW EXCLUSIVE MODE`)); err != nil {
+			return err
+		}
+
 		var n int
 		if err := tx.QueryRowContext(ctx, s.q(`SELECT COUNT(*) FROM {secret_keys}`)).Scan(&n); err != nil {
 			return err
