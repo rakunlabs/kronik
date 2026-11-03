@@ -1,0 +1,203 @@
+@import 'tailwindcss';
+@import '@fontsource-variable/ibm-plex-sans/wght.css';
+@import '@fontsource/ibm-plex-mono/400.css';
+@import '@fontsource/ibm-plex-mono/500.css';
+
+/* Tailwind names for the colours below: bg-surface, text-ink-2, border-line,
+   text-warn, bg-ok-soft, rounded-box, shadow-panel… */
+@theme inline {
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-line: var(--border);
+  --color-line-strong: var(--border-strong);
+  --color-ink: var(--text);
+  --color-ink-2: var(--text-2);
+  --color-ink-3: var(--text-3);
+  --color-link: var(--accent);
+  --color-cta: var(--cta);
+  --color-cta-hover: var(--cta-hover);
+  --color-cta-text: var(--cta-text);
+  --color-cta-border: var(--cta-border);
+  --color-danger: var(--danger);
+  --color-danger-soft: var(--danger-soft);
+  --color-danger-border: var(--danger-border);
+  --color-warn: var(--warn);
+  --color-warn-soft: var(--warn-soft);
+  --color-ok: var(--ok);
+  --color-ok-soft: var(--ok-soft);
+  --color-info: var(--info);
+  --color-info-soft: var(--info-soft);
+  --color-focus: var(--focus);
+  --color-stripe: var(--stripe);
+  --color-row-hover: var(--row-hover);
+  --color-term-bg: var(--term-bg);
+  --color-term-text: var(--term-text);
+  --color-term-dim: var(--term-dim);
+  --radius-box: var(--radius);
+  --shadow-panel: var(--shadow);
+  --font-sans: var(--font);
+  --font-mono: var(--mono);
+}
+
+/* Every colour is defined once with light-dark(): an element follows the
+   color-scheme it inherits, so the page theme is one property on the root and
+   the sidebar stays dark with color-scheme: dark on it. */
+:root {
+  --bg: light-dark(#fbfbf9, #161614);
+  --surface: light-dark(#ffffff, #1c1c19);
+  --surface-2: light-dark(#f3f3ef, #252522);
+  --border: light-dark(#e7e7e1, #2c2c29);
+  --border-strong: light-dark(#d6d6cf, #3b3b37);
+  --text: light-dark(#21211f, #e8e8e4);
+  --text-2: light-dark(#50504b, #b4b4ae);
+  --text-3: light-dark(#6f6f69, #8b8b85);
+  --accent: light-dark(#4f39f6, #9aa5fb);
+  --cta: light-dark(#fbff81, #e9ef5a);
+  --cta-hover: light-dark(#f2f65c, #f4f871);
+  --cta-text: #21211f;
+  --cta-border: light-dark(#b8b6a0, #c8cc4a);
+  --danger: light-dark(#c4372f, #f0817b);
+  --danger-soft: light-dark(#fbeceb, #361d1b);
+  --danger-border: light-dark(#ebbab6, #6b3431);
+  --warn: light-dark(#985b0a, #e3b05c);
+  --warn-soft: light-dark(#fbf1df, #362c18);
+  --ok: light-dark(#276e45, #67c792);
+  --ok-soft: light-dark(#e5f2ea, #1a3024);
+  --info: light-dark(#2b5c8a, #8cc4f0);
+  --info-soft: light-dark(#e6eef6, #1b2a38);
+  --focus: light-dark(#21211f, #f2f65c);
+  --stripe: light-dark(#f9f9f6, #1f1f1c);
+  --row-hover: light-dark(#f1f1eb, #292925);
+  --term-bg: #151513;
+  --term-text: #e4e4df;
+  --term-dim: #8b8b85;
+  --shadow: light-dark(0 1px 2px rgb(0 0 0 / .04), none);
+
+  --radius: 4px;
+  --font: 'IBM Plex Sans Variable', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --mono: 'IBM Plex Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+
+  color-scheme: light dark;
+  font: 14px/1.5 var(--font);
+  -webkit-font-smoothing: antialiased;
+  @apply bg-bg text-ink;
+}
+:root[data-theme='light'] { color-scheme: light; }
+:root[data-theme='dark'] { color-scheme: dark; }
+/* Custom properties are resolved where they are defined, so a part that is
+   always dark (the sidebar) sets the dark values itself. */
+.theme-dark {
+  color-scheme: dark;
+  --surface: #1c1c19;
+  --surface-2: #252522;
+  --border: #2c2c29;
+  --border-strong: #3b3b37;
+  --text: #e8e8e4;
+  --text-2: #b4b4ae;
+  --text-3: #8b8b85;
+  --accent: #9aa5fb;
+  --cta: #e9ef5a;
+  --focus: #f2f65c;
+  @apply text-ink;
+}
+
+@layer base {
+  * { scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent; }
+  h1 { @apply text-[22px] leading-tight font-semibold tracking-[-.01em]; }
+  h2 { @apply text-[15px] font-semibold; }
+  a { @apply text-link no-underline underline-offset-3 hover:underline; }
+  code, .mono { @apply font-mono text-[.93em]; }
+  .muted { @apply text-ink-2; }
+  .faint { @apply text-ink-3; }
+  .small { @apply text-xs; }
+  ::selection { @apply bg-cta text-cta-text; }
+
+  button, .btn {
+    @apply inline-flex cursor-pointer items-center justify-center gap-1.5 rounded-box border border-line-strong bg-surface
+      px-[11px] py-[5px] text-[13px] leading-[1.4] font-medium whitespace-nowrap text-ink no-underline
+      transition-colors duration-[120ms] [font-family:inherit];
+  }
+  button { @apply not-disabled:hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-45; }
+  .btn { @apply hover:bg-surface-2 hover:no-underline; }
+  .primary { @apply border-cta-border bg-cta text-cta-text not-disabled:hover:bg-cta-hover!; }
+  .danger { @apply border-danger-border text-danger; }
+  .danger.solid { @apply border-danger bg-danger text-white not-disabled:hover:bg-danger! not-disabled:hover:brightness-108; }
+  .ghost { @apply border-transparent bg-transparent; }
+  .icon { @apply p-[5px]; }
+  .sm { @apply px-2 py-0.5 text-xs; }
+
+  input, select, textarea {
+    @apply min-w-0 rounded-box border border-line-strong bg-surface px-[9px] py-[5px] text-[13px] text-ink [font-family:inherit]
+      placeholder:text-ink-3;
+  }
+  textarea { @apply resize-y font-mono; }
+  input[type='checkbox'] { @apply m-0 size-3.5 accent-ink; }
+  input:not([type='checkbox']):focus, select:focus, textarea:focus { @apply outline-2 -outline-offset-1 outline-focus; }
+  /* Outside the element, so it shows on yellow buttons in both themes. */
+  button:focus-visible, a:focus-visible, input[type='checkbox']:focus-visible { @apply outline-2 outline-offset-2 outline-focus; }
+
+  label { @apply grid gap-1 text-xs font-medium text-ink-2; }
+  label.check { @apply flex cursor-pointer items-center gap-2 text-[13px] font-normal text-ink; }
+  .hint { @apply text-[11.5px] font-normal text-ink-3; }
+}
+
+@layer components {
+  .panel { @apply rounded-box border border-line-strong bg-surface shadow-panel; }
+  .panel-title { @apply mb-3 flex items-center gap-2 text-[13px] font-semibold; }
+
+  /* A table inside a panel scrolls sideways on narrow screens. */
+  .table-wrap { @apply overflow-x-auto; }
+  table { @apply w-full border-collapse; }
+  th { @apply border-b border-line-strong bg-surface-2 px-3 py-1.5 text-left text-xs font-medium whitespace-nowrap text-ink-3; }
+  td { @apply border-b border-line px-3 py-[7px] align-middle whitespace-nowrap tabular-nums; }
+  td.grow { @apply w-full max-w-0 min-w-56 truncate; }
+  td.empty { @apply px-3 py-8 text-center whitespace-normal text-ink-2; }
+  td.shrink { @apply w-0; }
+  tr:last-child td { @apply border-b-0; }
+  tbody tr:nth-child(even) > td { @apply bg-stripe; }
+  tbody tr.link { @apply cursor-pointer; }
+  tbody tr.link:hover > td { @apply bg-row-hover; }
+
+  .badge {
+    @apply inline-flex items-center gap-[5px] rounded-[3px] border border-line-strong bg-surface px-1.5 text-[11px] leading-[1.6]
+      font-medium whitespace-nowrap text-ink-2;
+  }
+  a.badge { @apply hover:bg-surface-2 hover:no-underline; }
+  .badge.ok { @apply border-transparent bg-ok-soft text-ok; }
+  .badge.warn { @apply border-transparent bg-warn-soft text-warn; }
+  .badge.danger { @apply border-transparent bg-danger-soft text-danger; }
+  .badge.info { @apply border-transparent bg-info-soft text-info; }
+
+  .dot { @apply inline-block size-[7px] flex-none rounded-full bg-current; }
+  .dot.live { animation: pulse 1.4s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity: .25; } }
+
+  .alert {
+    @apply rounded-box border border-danger-border bg-danger-soft px-3 py-2 text-[13px] wrap-anywhere whitespace-pre-wrap text-danger;
+  }
+  .note { @apply rounded-box border border-line-strong bg-surface-2 px-3 py-2 text-[13px] text-ink-2; }
+
+  .term {
+    @apply m-0 overflow-auto rounded-box bg-term-bg px-3.5 py-3 font-mono text-[12.5px] leading-[1.55] wrap-anywhere
+      whitespace-pre-wrap text-term-text;
+  }
+  .term.empty { @apply text-term-dim; }
+
+  .kv { @apply m-0 grid grid-cols-[max-content_minmax(0,1fr)] gap-x-5 gap-y-[7px] text-[13px]; }
+  .kv > dt { @apply text-ink-3; }
+  .kv > dd { @apply m-0 min-w-0 wrap-anywhere; }
+
+  .seg { @apply inline-flex flex-wrap overflow-hidden rounded-box border border-line-strong bg-surface; }
+  .seg > button { @apply rounded-none border-0; }
+  .seg > button + button { @apply border-l border-line-strong; }
+  .seg > button.on { @apply bg-surface-2 shadow-[inset_0_-2px_0_var(--text)]; }
+
+  .tabs { @apply flex gap-0.5 border-b border-line-strong; }
+  .tabs > a {
+    @apply -mb-px border-b-2 border-transparent px-3 py-[7px] text-[13px] font-medium text-ink-2 hover:text-ink hover:no-underline;
+  }
+  .tabs > a.on { @apply border-ink text-ink; }
+
+  .back { @apply inline-flex items-center gap-1 text-[13px] text-ink-3 hover:text-ink hover:no-underline; }
+}

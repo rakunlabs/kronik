@@ -1,0 +1,64 @@
+# Docker Swarm: several kronik replicas on one PostgreSQL.
+#   printf 'postgres://kronik:secret@postgres:5432/kronik?sslmode=disable' | docker secret create kronik_dsn -
+#   printf 'secret' | docker secret create kronik_pg_password -
+#   docker stack deploy -c deploy/swarm-stack.yaml kronik
+#
+# Point KRONIK_STORE_DSN at a managed PostgreSQL in production instead of the
+# postgres service below.
+services:
+  kronik:
+    image: ghcr.io/rakunlabs/kronik:latest
+    entrypoint: ["/bin/sh", "-c", "KRONIK_STORE_DSN=$$(cat /run/secrets/kronik_dsn) exec /kronik"]
+    environment:
+      # Each task gets its own name in runs and the replica list.
+      KRONIK_NODE_NAME: "{{.Service.Name}}.{{.Task.Slot}}.{{.Task.ID}}"
+      KRONIK_ENVIRONMENT: prod
+      KRONIK_EXECUTOR_KUBERNETES_ENABLED: "false"
+    secrets:
+      - kronik_dsn
+    # Swarm jobs create services, which needs a manager's engine: kronik runs
+    # on managers and uses their socket (root on the host).
+    user: "0:0"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    ports:
+      - "8080:8080"
+    stop_grace_period: 60s
+    deploy:
+      replicas: 3
+      update_config:
+        parallelism: 1
+        order: start-first
+      restart_policy:
+        condition: any
+      placement:
+        constraints: [node.role == manager]
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_USER: kronik
+      POSTGRES_DB: kronik
+      POSTGRES_PASSWORD_FILE: /run/secrets/kronik_pg_password
+    secrets:
+      - kronik_pg_password
+    volumes:
+      - postgres:/var/lib/postgresql
+    deploy:
+      replicas: 1
+      placement:
+        constraints: [node.role == manager]
+
+secrets:
+  kronik_dsn:
+    external: true
+  kronik_pg_password:
+    external: true
+
+volumes:
+  postgres:

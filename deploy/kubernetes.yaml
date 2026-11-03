@@ -1,0 +1,142 @@
+# Kubernetes: several kronik replicas on an existing PostgreSQL.
+#   kubectl create secret generic kronik --from-literal=dsn='postgres://user:pass@host:5432/kronik?sslmode=require'
+#   kubectl apply -f deploy/kubernetes.yaml
+# Put the Service behind your Ingress / reverse proxy. It must sign users in
+# and set X-User, replacing any X-User the client sent; nothing else should
+# reach the pods (e.g. a NetworkPolicy that only lets the proxy in).
+#
+# Kubernetes jobs: kronik creates batch/v1 Jobs in its own namespace with the
+# ServiceAccount below. To run them in other namespaces, bind the Role there
+# too and list them in Settings → Configuration → Kubernetes.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kronik
+  labels:
+    app.kubernetes.io/name: kronik
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: kronik-jobs
+  labels:
+    app.kubernetes.io/name: kronik
+rules:
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "get", "list", "delete"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: kronik-jobs
+  labels:
+    app.kubernetes.io/name: kronik
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: kronik-jobs
+subjects:
+  - kind: ServiceAccount
+    name: kronik
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kronik
+  labels:
+    app.kubernetes.io/name: kronik
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kronik
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: kronik
+    spec:
+      # Running jobs get scheduler.shutdown_timeout (30s) to finish, then up
+      # to 10s to stop and a few seconds to save their result.
+      terminationGracePeriodSeconds: 60
+      serviceAccountName: kronik
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+      containers:
+        - name: kronik
+          image: ghcr.io/rakunlabs/kronik:latest
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: KRONIK_STORE_DSN
+              valueFrom:
+                secretKeyRef:
+                  name: kronik
+                  key: dsn
+            - name: KRONIK_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            # Shown at the top of the UI and told to MCP agents.
+            - name: KRONIK_ENVIRONMENT
+              value: prod
+            # No Docker Engine in a pod: Docker and Swarm jobs off by default
+            # here (they can still be turned on from the UI).
+            - name: KRONIK_EXECUTOR_DOCKER_ENABLED
+              value: "false"
+            - name: KRONIK_EXECUTOR_SWARM_ENABLED
+              value: "false"
+            # Script secrets: secrets.API_TOKEN in a js job.
+            # - name: KRONIK_SECRET_API_TOKEN
+            #   valueFrom:
+            #     secretKeyRef:
+            #       name: kronik
+            #       key: api-token
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 20
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kronik
+  labels:
+    app.kubernetes.io/name: kronik
+spec:
+  selector:
+    app.kubernetes.io/name: kronik
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
